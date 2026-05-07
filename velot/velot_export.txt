@@ -1,0 +1,5364 @@
+=== file: __init__.py ===
+"""
+VelOT — Optimal Transport RNA Velocity with Flow Matching Smoothing.
+
+API follows the scanpy/scvelo convention::
+
+    import velot
+
+    adata = velot.datasets.pancreas()
+    velot.pp.prepare(adata, root_cluster="Ductal")
+    velot.tl.velocity(adata)
+    velot.pl.velocity_stream(adata)
+
+    edges = [("Ductal", "Ngn3 low EP"), ("Ngn3 low EP", "Ngn3 high EP")]
+    velot.metrics.summary(adata, cluster_edges=edges)
+"""
+
+from . import pp, tl, pl, metrics, datasets
+
+__version__ = "0.1.0"
+
+__all__ = ["pp", "tl", "pl", "metrics", "datasets"]
+
+=== file: datasets.py ===
+"""
+velot.datasets — Built-in Datasets
+===================================
+
+Real datasets (require scVelo)::
+
+    adata = velot.datasets.pancreas()
+    adata = velot.datasets.erythroid()
+    adata = velot.datasets.dentategyrus()
+    adata = velot.datasets.bonemarrow()
+
+Synthetic datasets (no dependencies)::
+
+    adata = velot.datasets.synthetic_linear()
+    adata = velot.datasets.synthetic_bifurcation()
+    adata = velot.datasets.synthetic_tree(topology)
+"""
+
+from __future__ import annotations
+
+from typing import Optional, Sequence
+
+import numpy as np
+import scanpy as sc
+import anndata as ad
+from anndata import AnnData
+
+
+# =====================================================================
+# Real datasets (require scVelo)
+# =====================================================================
+
+
+def _require_scvelo():
+    """Import scVelo or raise a helpful error."""
+    try:
+        import scvelo as scv
+        return scv
+    except ImportError:
+        raise ImportError(
+            "scVelo is required to load this dataset. "
+            "Install with: pip install scvelo"
+        )
+
+
+def pancreas() -> AnnData:
+    """
+    Pancreas endocrinogenesis (day 15.5) — scVelo.
+
+    ~3,700 cells, 4 main lineages branching from endocrine progenitors.
+    Temporally mixed — progenitors and differentiated cells coexist
+    spatially. Good stress test for VelOT's spatial-temporal windowing.
+
+    Clusters: Ductal, Ngn3 low EP, Ngn3 high EP, Pre-endocrine,
+    Alpha, Beta, Delta, Epsilon.
+
+    Reference: Bastidas-Ponce et al. (2019).
+    """
+    scv = _require_scvelo()
+    return scv.datasets.pancreas()
+
+
+def erythroid() -> AnnData:
+    """
+    Gastrulation erythroid lineage — scVelo.
+
+    Erythroid cells from mouse gastrulation. Well-ordered linear
+    trajectory where simpler velocity methods already perform well.
+    Good positive control.
+
+    Reference: Pijuan-Sala et al. (2019).
+    """
+    scv = _require_scvelo()
+    return scv.datasets.gastrulation_erythroid()
+
+
+def dentategyrus() -> AnnData:
+    """
+    Dentate gyrus neurogenesis — scVelo.
+
+    ~2,900 cells from the hippocampal dentate gyrus with neurogenic
+    trajectory. Contains both cycling progenitors and mature neurons.
+
+    Reference: Hochgerner et al. (2018).
+    """
+    scv = _require_scvelo()
+    return scv.datasets.dentategyrus()
+
+
+def bonemarrow() -> AnnData:
+    """
+    Human bone marrow — scVelo.
+
+    ~5,780 cells from human bone marrow with multiple hematopoietic
+    lineages. Complex branching structure.
+
+    Reference: Setty et al. (2019).
+    """
+    scv = _require_scvelo()
+    return scv.datasets.bonemarrow()
+
+
+# =====================================================================
+# Synthetic datasets
+# =====================================================================
+
+
+def synthetic_linear(
+    densities: Sequence[int] = (100, 100),
+    positions: Sequence[float] = (1.0, 2.0),
+    noise_level: float = 0.05,
+    extra_dimensions: int = 0,
+    n_neighbors: int = 50,
+    seed: int = 42,
+) -> AnnData:
+    """
+    Synthetic linear trajectory.
+
+    Generates cells along a straight line with optional noise and
+    extra dimensions. Each segment gets a unique cell type label.
+
+    Parameters
+    ----------
+    densities
+        Number of cells in each segment.
+    positions
+        End coordinate of each segment (first starts at 0).
+    noise_level
+        Standard deviation of Gaussian noise added to coordinates.
+        Set to 0 for a perfectly clean line.
+    extra_dimensions
+        Number of additional noisy dimensions beyond the 2D plane.
+    n_neighbors
+        Number of neighbors for the KNN graph.
+    seed
+        Random seed.
+
+    Returns
+    -------
+    AnnData with:
+      - ``adata.obs['celltype']`` : segment labels
+      - ``adata.obs['true_pseudotime']`` : ground truth pseudotime in [0,1]
+      - ``adata.obsm['X_pca']`` : PCA coordinates
+      - ``adata.obsm['X_umap']`` : UMAP coordinates
+
+    Example
+    -------
+    ::
+
+        adata = velot.datasets.synthetic_linear(
+            densities=[200, 200, 200],
+            positions=[1, 2, 3],
+            noise_level=0.05,
+        )
+    """
+    np.random.seed(seed)
+
+    if len(densities) != len(positions):
+        raise ValueError("densities and positions must have the same length.")
+
+    t_list, x_list, y_list, labels_list = [], [], [], []
+
+    start_pos = 0.0
+    for i, (n_cells, end_pos) in enumerate(zip(densities, positions)):
+        t = np.random.uniform(start_pos, end_pos, n_cells)
+        t_list.append(t)
+        x_list.append(t.copy())
+        y_list.append(np.zeros(n_cells))
+        labels_list.append(np.array([f"Segment_{i+1}"] * n_cells))
+        start_pos = end_pos
+
+    return _build_synthetic_adata(
+        t_list, x_list, y_list, labels_list,
+        noise_level=noise_level,
+        extra_dimensions=extra_dimensions,
+        n_neighbors=n_neighbors,
+    )
+
+
+def synthetic_bifurcation(
+    root_density: int = 200,
+    root_position: float = 1.0,
+    branch_densities: Sequence[int] = (100, 100),
+    branch_positions: Sequence[float] = (2.0, 2.0),
+    branch_slopes: Sequence[float] = (2.0, -2.0),
+    noise_level: float = 0.05,
+    extra_dimensions: int = 0,
+    n_neighbors: int = 50,
+    seed: int = 42,
+) -> AnnData:
+    """
+    Synthetic bifurcating trajectory.
+
+    A root trunk splits into multiple branches diverging in the
+    y-direction. This is the classic test case for velocity methods
+    at branching points.
+
+    Parameters
+    ----------
+    root_density
+        Number of cells in the root trunk.
+    root_position
+        End coordinate of the root (starts at 0).
+    branch_densities
+        Number of cells per branch.
+    branch_positions
+        End coordinate of each branch.
+    branch_slopes
+        Y-axis slope of each branch (controls separation).
+    noise_level
+        Gaussian noise standard deviation.
+    extra_dimensions
+        Extra noisy dimensions.
+    n_neighbors
+        KNN neighbors.
+    seed
+        Random seed.
+
+    Returns
+    -------
+    AnnData with celltype labels and ground truth pseudotime.
+
+    Example
+    -------
+    ::
+
+        adata = velot.datasets.synthetic_bifurcation(
+            root_density=300,
+            branch_densities=[200, 200],
+            branch_slopes=[2, -2],
+        )
+    """
+    np.random.seed(seed)
+
+    if not (len(branch_densities) == len(branch_positions) == len(branch_slopes)):
+        raise ValueError(
+            "branch_densities, branch_positions, and branch_slopes "
+            "must have the same length."
+        )
+
+    t_list, x_list, y_list, labels_list = [], [], [], []
+
+    # Root trunk
+    t_root = np.random.uniform(0, root_position, root_density)
+    t_list.append(t_root)
+    x_list.append(t_root.copy())
+    y_list.append(np.zeros(root_density))
+    labels_list.append(np.array(["Root"] * root_density))
+
+    # Branches
+    for i, (n_cells, end_pos, slope) in enumerate(
+        zip(branch_densities, branch_positions, branch_slopes)
+    ):
+        t = np.random.uniform(root_position, end_pos, n_cells)
+        t_list.append(t)
+        x_list.append(t.copy())
+        y_list.append((t - root_position) * slope)
+        labels_list.append(np.array([f"Branch_{i+1}"] * n_cells))
+
+    return _build_synthetic_adata(
+        t_list, x_list, y_list, labels_list,
+        noise_level=noise_level,
+        extra_dimensions=extra_dimensions,
+        n_neighbors=n_neighbors,
+    )
+
+
+def synthetic_tree(
+    topology: Sequence[dict],
+    noise_level: float = 0.05,
+    extra_dimensions: int = 0,
+    n_neighbors: int = 50,
+    seed: int = 42,
+) -> AnnData:
+    """
+    Synthetic tree-structured trajectory.
+
+    Build arbitrarily complex branching topologies by specifying
+    a list of branch definitions. Each branch starts where its
+    parent ended.
+
+    Parameters
+    ----------
+    topology
+        List of dicts, each with keys:
+          - ``name`` (str): branch label
+          - ``parent`` (str or None): parent branch name
+          - ``n_cells`` (int): number of cells
+          - ``length`` (float): pseudotime duration
+          - ``slope`` (float): y-axis slope
+    noise_level
+        Gaussian noise standard deviation.
+    extra_dimensions
+        Extra noisy dimensions.
+    n_neighbors
+        KNN neighbors.
+    seed
+        Random seed.
+
+    Returns
+    -------
+    AnnData with celltype labels and ground truth pseudotime.
+
+    Example
+    -------
+    ::
+
+        topology = [
+            {"name": "Root",     "parent": None,   "n_cells": 400,
+             "length": 0.5, "slope": 0.0},
+            {"name": "Branch_A", "parent": "Root", "n_cells": 200,
+             "length": 0.5, "slope": 2.0},
+            {"name": "Branch_B", "parent": "Root", "n_cells": 200,
+             "length": 0.5, "slope": -2.0},
+            {"name": "Branch_C", "parent": "Branch_B", "n_cells": 150,
+             "length": 0.3, "slope": 0.0},
+        ]
+        adata = velot.datasets.synthetic_tree(topology)
+    """
+    np.random.seed(seed)
+
+    t_list, x_list, y_list, labels_list = [], [], [], []
+    end_states = {}
+
+    for branch in topology:
+        name = branch["name"]
+        parent = branch["parent"]
+        n_cells = branch["n_cells"]
+        length = branch["length"]
+        slope = branch["slope"]
+
+        if parent is None:
+            start_t, start_y = 0.0, 0.0
+        else:
+            if parent not in end_states:
+                raise ValueError(
+                    f"Parent '{parent}' not found. Parents must be "
+                    f"listed before their children in the topology."
+                )
+            start_t = end_states[parent]["t"]
+            start_y = end_states[parent]["y"]
+
+        end_t = start_t + length
+
+        t = np.random.uniform(start_t, end_t, n_cells)
+        x = t.copy()
+        y = start_y + (t - start_t) * slope
+
+        end_states[name] = {
+            "t": end_t,
+            "y": start_y + length * slope,
+        }
+
+        t_list.append(t)
+        x_list.append(x)
+        y_list.append(y)
+        labels_list.append(np.array([name] * n_cells))
+
+    return _build_synthetic_adata(
+        t_list, x_list, y_list, labels_list,
+        noise_level=noise_level,
+        extra_dimensions=extra_dimensions,
+        n_neighbors=n_neighbors,
+    )
+
+
+# =====================================================================
+# Shared builder for synthetic datasets
+# =====================================================================
+
+
+def _build_synthetic_adata(
+    t_list: list,
+    x_list: list,
+    y_list: list,
+    labels_list: list,
+    noise_level: float = 0.05,
+    extra_dimensions: int = 0,
+    n_neighbors: int = 50,
+) -> AnnData:
+    """
+    Build an AnnData object from lists of coordinates.
+
+    Handles noise, extra dimensions, PCA, KNN, and UMAP.
+    """
+    t_all = np.concatenate(t_list)
+    x_all = np.concatenate(x_list)
+    y_all = np.concatenate(y_list)
+    labels_all = np.concatenate(labels_list)
+
+    total = len(t_all)
+
+    # Add noise
+    if noise_level > 0:
+        x_all = x_all + np.random.normal(0, noise_level, total)
+        y_all = y_all + np.random.normal(0, noise_level, total)
+
+    # Build coordinate matrix
+    X = np.column_stack([x_all, y_all])
+
+    # Add extra noisy dimensions
+    for _ in range(extra_dimensions):
+        X = np.column_stack([X, np.random.normal(0, noise_level, total)])
+
+    # Create AnnData
+    adata = ad.AnnData(X)
+
+    # Store metadata
+    adata.obs["celltype"] = labels_all
+    adata.obs["celltype"] = adata.obs["celltype"].astype("category")
+
+    # Ground truth pseudotime normalized to [0, 1]
+    pt = t_all.copy()
+    pt = (pt - pt.min()) / (pt.max() - pt.min() + 1e-12)
+    adata.obs["true_pseudotime"] = pt
+
+    # Store the "clean" 2D coordinates for reference
+    adata.obsm["X_spatial_true"] = np.column_stack([
+        np.concatenate(x_list),  # without noise
+        np.concatenate(y_list),
+    ])
+
+    # PCA
+    if extra_dimensions > 0:
+        sc.tl.pca(adata)
+    else:
+        # In 2D, PCA is just the coordinates themselves
+        adata.obsm["X_pca"] = X.copy()
+
+    # KNN graph + UMAP
+    sc.pp.neighbors(adata, n_neighbors=n_neighbors)
+    sc.tl.umap(adata)
+
+    return adata
+
+
+# =====================================================================
+# Quick topology templates
+# =====================================================================
+
+
+def symmetric_bifurcation(
+    n_root: int = 400,
+    n_branch: int = 200,
+    noise_level: float = 0.05,
+    extra_dimensions: int = 0,
+    seed: int = 42,
+) -> AnnData:
+    """
+    Convenience: symmetric Y-shaped bifurcation.
+
+    ::
+
+        Root ──┬── Branch_A (up)
+               └── Branch_B (down)
+    """
+    return synthetic_bifurcation(
+        root_density=n_root,
+        branch_densities=[n_branch, n_branch],
+        branch_slopes=[2.0, -2.0],
+        noise_level=noise_level,
+        extra_dimensions=extra_dimensions,
+        seed=seed,
+    )
+
+
+def multifurcation(
+    n_root: int = 400,
+    n_per_branch: int = 150,
+    n_branches: int = 3,
+    noise_level: float = 0.05,
+    extra_dimensions: int = 0,
+    seed: int = 42,
+) -> AnnData:
+    """
+    Convenience: root splitting into multiple branches.
+
+    Branches are evenly spaced in angle.
+    """
+    angles = np.linspace(-np.pi / 3, np.pi / 3, n_branches)
+    slopes = [float(np.tan(a)) for a in angles]
+
+    return synthetic_bifurcation(
+        root_density=n_root,
+        branch_densities=[n_per_branch] * n_branches,
+        branch_positions=[2.0] * n_branches,
+        branch_slopes=slopes,
+        noise_level=noise_level,
+        extra_dimensions=extra_dimensions,
+        seed=seed,
+    )
+
+
+def linear_with_cycle(
+    n_linear: int = 300,
+    n_cycle: int = 200,
+    noise_level: float = 0.05,
+    seed: int = 42,
+) -> AnnData:
+    """
+    Convenience: linear trajectory that loops back (challenging case).
+
+    This creates a dataset where pseudotime doesn't correspond to
+    a single direction — cells at the end are spatially near the
+    start. Tests whether VelOT can handle cyclic structures.
+    """
+    np.random.seed(seed)
+
+    # Linear part
+    t_lin = np.random.uniform(0, 1.0, n_linear)
+    x_lin = t_lin * 3.0
+    y_lin = np.zeros(n_linear)
+
+    # Cyclic part: arc from end back toward start
+    t_cyc = np.random.uniform(1.0, 2.0, n_cycle)
+    phase = (t_cyc - 1.0) * np.pi  # 0 to pi
+    x_cyc = 3.0 * np.cos(phase)
+    y_cyc = 1.5 * np.sin(phase)
+
+    t_all = np.concatenate([t_lin, t_cyc])
+    x_all = np.concatenate([x_lin, x_cyc])
+    y_all = np.concatenate([y_lin, y_cyc])
+
+    if noise_level > 0:
+        x_all += np.random.normal(0, noise_level, len(t_all))
+        y_all += np.random.normal(0, noise_level, len(t_all))
+
+    labels = np.array(
+        ["Linear"] * n_linear + ["Cycle"] * n_cycle
+    )
+
+    X = np.column_stack([x_all, y_all])
+    adata = ad.AnnData(X)
+    adata.obs["celltype"] = labels
+    adata.obs["celltype"] = adata.obs["celltype"].astype("category")
+
+    pt = t_all.copy()
+    pt = (pt - pt.min()) / (pt.max() - pt.min() + 1e-12)
+    adata.obs["true_pseudotime"] = pt
+
+    adata.obsm["X_pca"] = X.copy()
+    sc.pp.neighbors(adata, n_neighbors=50)
+    sc.tl.umap(adata)
+
+    return adata
+
+
+def synthetic_cycle(
+    densities: Sequence[int] = (100, 100, 100, 100),
+    spans: Optional[Sequence[float]] = None,
+    names: Optional[Sequence[str]] = None,
+    n_rotations: float = 1.0,
+    x_amplitude: float = 1.0,
+    y_amplitude: float = 1.0,
+    z_drift: float = 0.0,
+    noise_level: float = 0.05,
+    extra_dimensions: int = 0,
+    n_neighbors: int = 50,
+    seed: int = 42,
+) -> AnnData:
+    """
+    Synthetic cyclic / helicoidal trajectory.
+
+    Cells follow a circular or helical path parameterized by
+    pseudotime. This creates a challenging scenario where cells
+    at the end are spatially near the start, and pseudotime
+    does not correspond to a single spatial direction.
+
+    The trajectory is divided into segments (cell types), each
+    with controllable density and pseudotime span.
+
+    Parameters
+    ----------
+    densities
+        Number of cells per segment. Length determines the
+        number of cell types.
+    spans
+        Pseudotime span of each segment. Must sum to any positive
+        value (will be normalized internally). If None, segments
+        are equally spaced.
+    names
+        Labels for each segment. If None, generates
+        "Phase_1", "Phase_2", etc.
+    n_rotations
+        Number of full 2π rotations over the entire pseudotime
+        range. 1.0 = one full circle, 2.0 = two loops, 0.5 = half
+        circle, etc.
+    x_amplitude
+        Semi-axis length in x direction (controls elliptical shape).
+    y_amplitude
+        Semi-axis length in y direction.
+    z_drift
+        If > 0, adds a z-coordinate that increases linearly with
+        pseudotime, turning the circle into a helix. The value
+        controls the total height of the helix.
+    noise_level
+        Gaussian noise standard deviation.
+    extra_dimensions
+        Additional noisy dimensions.
+    n_neighbors
+        KNN neighbors.
+    seed
+        Random seed.
+
+    Returns
+    -------
+    AnnData with:
+      - ``adata.obs['celltype']`` : phase/segment labels
+      - ``adata.obs['true_pseudotime']`` : ground truth pseudotime in [0,1]
+      - ``adata.obsm['X_pca']`` : PCA coordinates
+      - ``adata.obsm['X_umap']`` : UMAP coordinates
+
+    Examples
+    --------
+    Simple circle with 4 equal phases::
+
+        adata = velot.datasets.synthetic_cycle()
+
+    Elliptical orbit with unequal phases::
+
+        adata = velot.datasets.synthetic_cycle(
+            densities=[200, 50, 200, 50],
+            spans=[0.4, 0.1, 0.4, 0.1],
+            names=["G1", "S", "G2", "M"],
+            x_amplitude=2.0,
+            y_amplitude=1.0,
+        )
+
+    Double helix (two full turns with vertical drift)::
+
+        adata = velot.datasets.synthetic_cycle(
+            densities=[150, 150, 150, 150],
+            n_rotations=2.0,
+            z_drift=3.0,
+        )
+
+    Dense start, sparse end::
+
+        adata = velot.datasets.synthetic_cycle(
+            densities=[400, 200, 100, 50],
+            names=["Early", "Mid", "Late", "Terminal"],
+        )
+    """
+    np.random.seed(seed)
+
+    n_segments = len(densities)
+
+    # Validate and set defaults
+    if names is None:
+        names = [f"Phase_{i+1}" for i in range(n_segments)]
+    if len(names) != n_segments:
+        raise ValueError(
+            f"Length of names ({len(names)}) must match "
+            f"length of densities ({n_segments})."
+        )
+
+    if spans is None:
+        spans = [1.0 / n_segments] * n_segments
+    if len(spans) != n_segments:
+        raise ValueError(
+            f"Length of spans ({len(spans)}) must match "
+            f"length of densities ({n_segments})."
+        )
+
+    # Normalize spans to [0, 1]
+    spans = np.array(spans, dtype=np.float64)
+    spans = spans / spans.sum()
+
+    # Build cumulative boundaries
+    boundaries = np.concatenate([[0.0], np.cumsum(spans)])
+
+    # Generate cells per segment
+    t_list = []
+    x_list = []
+    y_list = []
+    labels_list = []
+
+    for i in range(n_segments):
+        n_cells = densities[i]
+        t_start = boundaries[i]
+        t_end = boundaries[i + 1]
+
+        # Uniform pseudotime within this segment
+        t = np.random.uniform(t_start, t_end, n_cells)
+
+        # Map pseudotime to angle
+        angle = t * n_rotations * 2.0 * np.pi
+
+        # Parametric coordinates
+        x = x_amplitude * np.cos(angle)
+        y = y_amplitude * np.sin(angle)
+
+        t_list.append(t)
+        x_list.append(x)
+        y_list.append(y)
+        labels_list.append(np.array([names[i]] * n_cells))
+
+    # Concatenate
+    t_all = np.concatenate(t_list)
+    x_all = np.concatenate(x_list)
+    y_all = np.concatenate(y_list)
+    labels_all = np.concatenate(labels_list)
+    total = len(t_all)
+
+    # Add noise
+    if noise_level > 0:
+        x_all = x_all + np.random.normal(0, noise_level, total)
+        y_all = y_all + np.random.normal(0, noise_level, total)
+
+    # Build coordinate matrix
+    if z_drift > 0:
+        z_all = t_all * z_drift
+        if noise_level > 0:
+            z_all = z_all + np.random.normal(0, noise_level, total)
+        X = np.column_stack([x_all, y_all, z_all])
+    else:
+        X = np.column_stack([x_all, y_all])
+
+    # Add extra noisy dimensions
+    for _ in range(extra_dimensions):
+        X = np.column_stack([
+            X, np.random.normal(0, noise_level if noise_level > 0 else 0.05, total),
+        ])
+
+    # Create AnnData
+    adata = ad.AnnData(X)
+
+    adata.obs["celltype"] = labels_all
+    adata.obs["celltype"] = adata.obs["celltype"].astype("category")
+
+    # Ground truth pseudotime
+    pt = t_all.copy()
+    pt = (pt - pt.min()) / (pt.max() - pt.min() + 1e-12)
+    adata.obs["true_pseudotime"] = pt
+
+    # Store clean 2D coordinates for reference
+    adata.obsm["X_spatial_true"] = np.column_stack([
+        np.concatenate([x_amplitude * np.cos(t * n_rotations * 2 * np.pi)
+                        for t in t_list]),
+        np.concatenate([y_amplitude * np.sin(t * n_rotations * 2 * np.pi)
+                        for t in t_list]),
+    ])
+
+    # PCA
+    if X.shape[1] > 2:
+        sc.tl.pca(adata)
+    else:
+        adata.obsm["X_pca"] = X.copy()
+
+    # KNN + UMAP
+    sc.pp.neighbors(adata, n_neighbors=n_neighbors)
+    sc.tl.umap(adata)
+
+    return adata
+
+=== file: metrics.py ===
+"""
+velot.metrics — Evaluation
+==========================
+
+Metrics for evaluating velocity field quality.
+
+Adapted from UniTVelo (Gao et al. 2022) and the original VelOT pipeline.
+
+Usage::
+
+    import velot
+
+    # Cross-boundary direction correctness
+    edges = [("Root", "Branch_A"), ("Root", "Branch_B")]
+    scores = velot.metrics.cross_boundary_correctness(
+        adata, edges, cluster_key="clusters",
+    )
+
+    # Inner-cluster coherence
+    scores = velot.metrics.inner_cluster_coherence(adata, cluster_key="clusters")
+"""
+
+from __future__ import annotations
+
+from typing import Optional, Sequence, Tuple
+
+import numpy as np
+from scipy.sparse import issparse
+from sklearn.metrics.pairwise import cosine_similarity
+from anndata import AnnData
+
+
+# =====================================================================
+# Neighbor utilities
+# =====================================================================
+
+
+def _get_neighbor_indices(adata: AnnData) -> list:
+    """Extract per-cell neighbor indices from the KNN graph."""
+    if "connectivities" not in adata.obsp:
+        raise ValueError(
+            "KNN graph not found. Run velot.pp.neighbors() or "
+            "sc.pp.neighbors() first."
+        )
+
+    conn = adata.obsp["connectivities"]
+    return [conn.getrow(i).indices for i in range(conn.shape[0])]
+
+
+def _keep_type(
+    adata: AnnData,
+    nodes: np.ndarray,
+    target: str,
+    cluster_key: str,
+) -> np.ndarray:
+    """Filter node indices to keep only those matching a cluster label."""
+    return nodes[adata.obs[cluster_key].values[nodes] == target]
+
+
+def _safe_dense(X):
+    """Convert to dense array if sparse."""
+    if issparse(X):
+        return np.asarray(X.toarray())
+    return np.asarray(X)
+
+
+# =====================================================================
+# Cross-boundary direction correctness
+# =====================================================================
+
+
+def cross_boundary_correctness(
+    adata: AnnData,
+    cluster_edges: Sequence[Tuple[str, str]],
+    cluster_key: str = "clusters",
+    velocity_key: str = "velocity_umap",
+    embedding_key: str = "X_umap",
+    majority_vote: bool = True,
+    return_raw: bool = False,
+) -> dict:
+    """
+    Cross-Boundary Direction Correctness Score (CBDir).
+
+    For each directed edge A→B, measures whether cells of type A
+    have velocity vectors pointing toward their neighbors of type B.
+
+    Adapted from UniTVelo (Gao et al. 2022).
+
+    Parameters
+    ----------
+    adata
+        Annotated data matrix with velocity computed.
+    cluster_edges
+        List of (source, target) cluster name pairs defining
+        expected transitions. E.g., ``[("Root", "Branch_A")]``.
+    cluster_key
+        Column in adata.obs with cluster labels.
+    velocity_key
+        Key in adata.obsm with velocity vectors.
+    embedding_key
+        Key in adata.obsm with cell coordinates (same space as velocity).
+    majority_vote
+        If True, score is fraction of neighbors with positive cosine.
+        If False, score is mean cosine similarity.
+    return_raw
+        If True, return per-cell scores for each edge (for box plots).
+        If False, return mean score per edge and global mean.
+
+    Returns
+    -------
+    If ``return_raw=True``:
+        dict mapping (source, target) to list of per-cell scores.
+    If ``return_raw=False``:
+        tuple of (dict mapping edges to mean scores, global mean score).
+
+    Example
+    -------
+    ::
+
+        edges = [("Root", "Branch_A"), ("Root", "Branch_B")]
+        scores, mean_score = velot.metrics.cross_boundary_correctness(
+            adata, edges, cluster_key="clusters",
+        )
+    """
+    if velocity_key not in adata.obsm:
+        raise ValueError(
+            f"Velocity key '{velocity_key}' not found in adata.obsm."
+        )
+
+    X_emb = _safe_dense(adata.obsm[embedding_key])
+    V_emb = _safe_dense(adata.obsm[velocity_key])
+
+    all_nbs = _get_neighbor_indices(adata)
+    scores = {}
+    all_scores = {}
+
+    for u, v in cluster_edges:
+        # Select source cells
+        sel = np.where(adata.obs[cluster_key].astype(str) == str(u))[0]
+        if len(sel) == 0:
+            all_scores[(u, v)] = []
+            scores[(u, v)] = float("nan")
+            continue
+
+        type_score = []
+        for cell_idx in sel:
+            # Find neighbors of target type
+            nbs = all_nbs[cell_idx]
+            boundary = _keep_type(adata, nbs, str(v), cluster_key)
+
+            if len(boundary) == 0:
+                continue
+
+            # Direction from cell to boundary neighbors
+            x_pos = X_emb[cell_idx]
+            x_vel = V_emb[cell_idx]
+            target_coords = X_emb[boundary]
+
+            position_diff = target_coords - x_pos
+            dir_scores = cosine_similarity(
+                position_diff, x_vel.reshape(1, -1),
+            ).flatten()
+
+            if majority_vote:
+                type_score.append(np.mean(dir_scores > 0))
+            else:
+                type_score.append(np.mean(dir_scores))
+
+        all_scores[(u, v)] = type_score
+        scores[(u, v)] = float(np.mean(type_score)) if type_score else float("nan")
+
+    if return_raw:
+        return all_scores
+
+    global_mean = np.nanmean(list(scores.values())) if scores else float("nan")
+    return scores, float(global_mean)
+
+
+# =====================================================================
+# Inner-cluster coherence
+# =====================================================================
+
+
+def inner_cluster_coherence(
+    adata: AnnData,
+    cluster_key: str = "clusters",
+    velocity_key: str = "velocity_umap",
+    return_raw: bool = False,
+) -> dict:
+    """
+    Inner-Cluster Coherence Score (ICCoh).
+
+    For each cluster, measures how consistent the velocity vectors
+    are among cells of the same type by computing mean pairwise
+    cosine similarity within each cell's same-type neighbors.
+
+    Adapted from UniTVelo (Gao et al. 2022).
+
+    Parameters
+    ----------
+    adata
+        Annotated data matrix with velocity computed.
+    cluster_key
+        Column in adata.obs with cluster labels.
+    velocity_key
+        Key in adata.obsm with velocity vectors.
+    return_raw
+        If True, return per-cell scores per cluster.
+        If False, return mean score per cluster and global mean.
+
+    Returns
+    -------
+    If ``return_raw=True``:
+        dict mapping cluster name to list of per-cell scores.
+    If ``return_raw=False``:
+        tuple of (dict of mean scores, global mean score).
+
+    Example
+    -------
+    ::
+
+        scores, mean = velot.metrics.inner_cluster_coherence(
+            adata, cluster_key="clusters",
+        )
+    """
+    if velocity_key not in adata.obsm:
+        raise ValueError(
+            f"Velocity key '{velocity_key}' not found in adata.obsm."
+        )
+
+    V = _safe_dense(adata.obsm[velocity_key])
+    all_nbs = _get_neighbor_indices(adata)
+    clusters = adata.obs[cluster_key].astype(str).values
+    unique_clusters = np.unique(clusters)
+
+    scores = {}
+    all_scores = {}
+
+    for cat in unique_clusters:
+        sel = np.where(clusters == cat)[0]
+
+        cat_score = []
+        for cell_idx in sel:
+            nbs = all_nbs[cell_idx]
+            same_type = _keep_type(adata, nbs, cat, cluster_key)
+
+            if len(same_type) == 0:
+                continue
+
+            sim = cosine_similarity(
+                V[cell_idx : cell_idx + 1], V[same_type],
+            ).mean()
+            cat_score.append(float(sim))
+
+        all_scores[cat] = cat_score
+        scores[cat] = float(np.mean(cat_score)) if cat_score else float("nan")
+
+    if return_raw:
+        return all_scores
+
+    global_mean = np.nanmean(list(scores.values())) if scores else float("nan")
+    return scores, float(global_mean)
+
+
+# =====================================================================
+# Summary display
+# =====================================================================
+
+def summary(
+    adata: AnnData,
+    cluster_edges: Optional[Sequence[Tuple[str, str]]] = None,
+    cluster_key: str = "clusters",
+    velocity_key: str = "velocity_umap",
+) -> dict:
+    """
+    Compute and print a summary of velocity metrics.
+
+    Returns both aggregated means and raw per-cell scores
+    so that the output can be passed directly to
+    ``velot.pl.metric_summary()`` for box plots.
+
+    Parameters
+    ----------
+    adata
+        Annotated data matrix with velocity computed.
+    cluster_edges
+        Transition edges for CBDir. If None, CBDir is skipped.
+    cluster_key
+        Cluster column.
+    velocity_key
+        Velocity key.
+
+    Returns
+    -------
+    Dictionary with:
+      - ``"iccoh"``: dict of cluster → list of per-cell scores
+      - ``"iccoh_mean"``: global mean ICCoh
+      - ``"cbdir"``: dict of (src, tgt) → list of per-cell scores
+      - ``"cbdir_mean"``: global mean CBDir
+
+    Example
+    -------
+    ::
+
+        results = velot.metrics.summary(adata, cluster_edges=edges)
+        velot.pl.metric_summary(results)
+    """
+    results = {}
+
+    # ICCoh — get raw scores
+    iccoh_raw = inner_cluster_coherence(
+        adata, cluster_key=cluster_key,
+        velocity_key=velocity_key, return_raw=True,
+    )
+    iccoh_means = {
+        k: float(np.mean(v)) if len(v) > 0 else float("nan")
+        for k, v in iccoh_raw.items()
+    }
+    iccoh_global = float(np.nanmean(list(iccoh_means.values()))) if iccoh_means else float("nan")
+
+    results["iccoh"] = iccoh_raw
+    results["iccoh_mean"] = iccoh_global
+
+    print("=" * 50)
+    print("VelOT Velocity Metrics")
+    print("=" * 50)
+    print(f"\nInner-Cluster Coherence (mean: {iccoh_global:.3f}):")
+    for cat in sorted(iccoh_means.keys()):
+        print(f"  {str(cat):>25s}: {iccoh_means[cat]:.3f}")
+
+    # CBDir — get raw scores
+    if cluster_edges is not None:
+        cbdir_raw = cross_boundary_correctness(
+            adata, cluster_edges,
+            cluster_key=cluster_key,
+            velocity_key=velocity_key,
+            return_raw=True,
+        )
+        cbdir_means = {
+            k: float(np.mean(v)) if len(v) > 0 else float("nan")
+            for k, v in cbdir_raw.items()
+        }
+        cbdir_global = float(np.nanmean(list(cbdir_means.values()))) if cbdir_means else float("nan")
+
+        results["cbdir"] = cbdir_raw
+        results["cbdir_mean"] = cbdir_global
+
+        print(f"\nCross-Boundary Correctness (mean: {cbdir_global:.3f}):")
+        for (u, v) in cbdir_raw.keys():
+            print(f"  {u:>15s} → {v:<15s}: {cbdir_means[(u, v)]:.3f}")
+
+    print("=" * 50)
+    return results
+
+=== file: pl.py ===
+"""
+velot.pl — Plotting
+===================
+
+Visualization functions for the VelOT pipeline.
+Follows the scanpy/scvelo convention.
+
+All functions accept ``show=True`` (display immediately) and
+``save=None`` (path to save the figure).
+
+Usage::
+
+    import velot
+
+    velot.pl.velocity_stream(adata, color="clusters")
+    velot.pl.windows(adata)
+    velot.pl.training_curves(adata)
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Optional, Sequence
+
+import numpy as np
+import matplotlib.pyplot as plt
+import scanpy as sc
+from anndata import AnnData
+
+try:
+    import scvelo as scv
+
+    _HAS_SCVELO = True
+except ImportError:
+    _HAS_SCVELO = False
+
+
+# =====================================================================
+# Main plotting functions
+# =====================================================================
+
+def dataset_overview_simple(
+    adata: AnnData,
+    color: str = "clusters",
+    basis: str = "umap",
+    title: Optional[str] = "",
+    show: bool = True,
+    save: Optional[str] = None,
+    figsize: tuple = (5,5),
+    inframe: bool = False,
+    out_legend: bool = False
+) -> plt.Figure:
+    """
+    Overview of the dataset: embedding colored by clusters and pseudotime.
+
+    Parameters
+    ----------
+    adata
+        Annotated data matrix with UMAP and pseudotime computed.
+    color
+        Column in adata.obs for cluster coloring.
+    basis
+        Embedding to plot (``'umap'`` or ``'pca'``).
+    show
+        Whether to display the figure.
+    save
+        File path to save the figure. None to skip.
+    figsize
+        Figure size.
+
+    Returns
+    -------
+    matplotlib Figure.
+    """
+
+    fig, axes = plt.subplots(figsize=figsize)
+
+    if inframe:
+        scv.pl.scatter(
+            adata, basis=basis, color=color,
+            ax=axes, show=False, title="",
+            frameon=False, legend_loc="on data"
+        )
+    
+    else:
+        print("Plotting in scanpy")
+        sc.pl.embedding(
+            adata, basis=basis, color=color,
+            ax=axes, show=False, title="",
+            frameon=False
+        )
+
+        # Get existing legend
+        leg = axes.get_legend()
+        if leg is not None:
+            handles = leg.legend_handles
+            labels = [t.get_text() for t in leg.get_texts()]
+            leg.remove()  # remove original legend
+
+            if out_legend:
+                args = {"loc": "center left", "bbox_to_anchor": (1,0.5)}
+            else:
+                args = {"loc": "lower right"}
+
+
+            # Create new legend (customized)
+            axes.legend(
+                handles,
+                labels,
+                # title="Sample",          # or color name
+                fontsize=14,             # bigger text
+                # title_fontsize=11,
+                markerscale=1.5,           # bigger markers
+                frameon=False,
+                **args
+            )
+
+    axes.set_title(title, fontsize=18, fontfamily="sans serif")
+    add_umap_axis(axes)
+
+    plt.tight_layout()
+    _finish(fig, show=show, save=save)
+    return fig
+
+def dataset_overview(
+    adata: AnnData,
+    color: str = "clusters",
+    basis: str = "umap",
+    title: bool = True,
+    show: bool = True,
+    vertical: bool = False,
+    save: Optional[str] = None,
+    figsize: tuple = (12, 5),
+) -> plt.Figure:
+    """
+    Overview of the dataset: embedding colored by clusters and pseudotime.
+
+    Parameters
+    ----------
+    adata
+        Annotated data matrix with UMAP and pseudotime computed.
+    color
+        Column in adata.obs for cluster coloring.
+    basis
+        Embedding to plot (``'umap'`` or ``'pca'``).
+    show
+        Whether to display the figure.
+    save
+        File path to save the figure. None to skip.
+    figsize
+        Figure size.
+
+    Returns
+    -------
+    matplotlib Figure.
+    """
+    if vertical:
+        fig, axes = plt.subplots(2, 1, figsize=figsize)
+    
+    else:
+        fig, axes = plt.subplots(1, 2, figsize=figsize)
+
+    titles = ("", "")
+    if title:
+        titles = (color, "Diffusion Pseudotime")
+
+    sc.pl.embedding(
+        adata, basis=basis, color=color,
+        ax=axes[0], show=False, title="",
+        frameon=False
+    )
+    axes[0].set_title(titles[0], fontsize=18, fontfamily="sans serif")
+
+    ax = axes[0]
+    add_umap_axis(ax)
+
+    # Get existing legend
+    leg = ax.get_legend()
+    if leg is not None:
+        handles = leg.legend_handles
+        labels = [t.get_text() for t in leg.get_texts()]
+        leg.remove()  # remove original legend
+
+        # Create new legend (customized)
+        ax.legend(
+            handles,
+            labels,
+            # title="Sample",          # or color name
+            loc="lower right",       # change position here
+            fontsize=14,             # bigger text
+            # title_fontsize=11,
+            markerscale=1.5,           # bigger markers
+            frameon=False,
+        )
+
+    if "pseudotime" in adata.obs:
+        sc.pl.embedding(
+            adata, basis=basis, color="pseudotime",
+            ax=axes[1], show=False, title="",
+            frameon=False, color_map="viridis",
+        )
+    else:
+        axes[1].text(
+            0.5, 0.5, "No pseudotime computed",
+            ha="center", va="center", transform=axes[1].transAxes,
+        )
+        axes[1].set_title("Pseudotime")
+    axes[1].set_title(titles[1], fontsize=18, fontfamily="sans serif")
+    add_umap_axis(axes[1])
+
+    plt.tight_layout()
+    _finish(fig, show=show, save=save)
+    return fig
+
+def add_umap_axis(ax, pos=(0, 0), length=0.2, fontsize=10):
+    x0, y0 = pos
+
+    # Arrows
+    ax.annotate(
+        "", xy=(x0 + length, y0), xytext=(x0, y0),
+        xycoords=ax.transAxes,
+        arrowprops=dict(arrowstyle="->", lw=1.5, color="black"),
+    )
+    ax.annotate(
+        "", xy=(x0, y0 + length), xytext=(x0, y0),
+        xycoords=ax.transAxes,
+        arrowprops=dict(arrowstyle="->", lw=1.5, color="black"),
+    )
+
+    # Labels
+    ax.text(x0 + length, y0 - 0.02, "UMAP1",
+            transform=ax.transAxes, ha="right", va="top", fontsize=fontsize)
+
+    ax.text(x0 - 0.02, y0 + length, "UMAP2",
+            transform=ax.transAxes, ha="right", va="top",
+            rotation=90, fontsize=fontsize)
+
+
+def windows(
+    adata: AnnData,
+    basis: str = "umap",
+    pairs_to_show: Optional[Sequence[int]] = None,
+    max_show: int = 12,
+    ncols: int = 4,
+    point_size: int = 20,
+    title: str = None,
+    frameon: bool = False,
+    show: bool = True,
+    save: Optional[str] = None,
+    figsize_per_panel: tuple = (3, 3),
+) -> plt.Figure:
+    """
+    Visualize the spatial-temporal windows.
+
+    Each panel shows one window pair: source cells in blue, target
+    cells in orange. Overlap is shown in green.
+
+    Parameters
+    ----------
+    adata
+        Must have ``adata.uns['velot_windows']`` from
+        ``velot.tl.build_windows()``.
+    basis
+        Embedding to plot in.
+    pairs_to_show
+        Specific pair indices to display. For example,
+        ``[10, 13, 14, 15]`` shows only those four pairs.
+        If None, shows the first ``max_show`` pairs.
+    max_show
+        Maximum number of pairs when ``pairs_to_show`` is None.
+    ncols
+        Number of columns in the grid.
+    point_size
+        Scatter point size.
+    show
+        Whether to display.
+    save
+        File path to save.
+
+    Returns
+    -------
+    matplotlib Figure.
+
+    Examples
+    --------
+    Show first 8 pairs::
+
+        velot.pl.windows(adata, max_show=8)
+
+    Show specific pairs::
+
+        velot.pl.windows(adata, pairs_to_show=[10, 13, 14, 15])
+    """
+    if "velot_windows" not in adata.uns:
+        raise ValueError("No windows found. Run velot.tl.build_windows() first.")
+
+    pairs = adata.uns["velot_windows"]["pairs"]
+    n_total = len(pairs)
+
+    # Determine which pairs to show
+    if pairs_to_show is not None:
+        indices = list(pairs_to_show)
+        # Validate
+        for idx in indices:
+            if idx < 0 or idx >= n_total:
+                raise ValueError(
+                    f"Pair index {idx} out of range. "
+                    f"Dataset has {n_total} pairs (0 to {n_total - 1})."
+                )
+    else:
+        indices = list(range(min(max_show, n_total)))
+
+    n_show = len(indices)
+    nrows = int(np.ceil(n_show / ncols))
+
+    coords = adata.obsm.get(f"X_{basis}")
+    if coords is None:
+        raise ValueError(f"Embedding 'X_{basis}' not found in adata.obsm.")
+
+    figsize = (ncols * figsize_per_panel[0], nrows * figsize_per_panel[1])
+    fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
+    axes = np.atleast_2d(axes).flatten()
+
+    for panel_i, pair_idx in enumerate(indices):
+        ax = axes[panel_i]
+        idx_src, idx_tgt = pairs[pair_idx]
+
+        # Background: all cells in light gray
+        ax.scatter(
+            coords[:, 0], coords[:, 1],
+            s=1, c="lightgray", alpha=0.3,
+        )
+
+        # Find overlap
+        overlap = np.intersect1d(idx_src, idx_tgt)
+        src_only = np.setdiff1d(idx_src, overlap)
+        tgt_only = np.setdiff1d(idx_tgt, overlap)
+
+        # Plot source, target, overlap
+        if len(tgt_only) > 0:
+            ax.scatter(
+                coords[tgt_only, 0], coords[tgt_only, 1],
+                s=point_size, c="tab:orange", alpha=0.6, label="target",
+            )
+        if len(src_only) > 0:
+            ax.scatter(
+                coords[src_only, 0], coords[src_only, 1],
+                s=point_size, c="tab:blue", alpha=0.6, label="source",
+            )
+        if len(overlap) > 0:
+            ax.scatter(
+                coords[overlap, 0], coords[overlap, 1],
+                s=point_size, c="tab:green", alpha=0.6, label="overlap",
+            )
+
+        # ax.set_title(f"Pair {pair_idx}", fontsize=18, fontfamily="sans serif")
+
+        if not frameon:
+            ax.axis("off")
+        else:
+            ax.set_xticks([])
+            ax.set_yticks([])
+        # if panel_i == 0:
+        #     ax.legend(fontsize=6, loc="lower right")
+
+    add_umap_axis(axes[0])
+    
+    # Turn off unused axes
+    for j in range(n_show, len(axes)):
+        # axes[j].axis("off")
+        fig.delaxes(axes[j])
+
+    if title is not None:
+        fig.suptitle(
+            f"Window pairs ({n_show} of {n_total} shown)",
+            fontsize=18, fontweight="bold",
+        )
+    
+    handles, labels = axes[panel_i].get_legend_handles_labels()
+    axes[panel_i].legend(
+        handles,
+        labels,
+        # title="Sample",
+        fontsize=14,
+        # title_fontsize=8,
+        markerscale=2,
+        loc="lower right",
+        frameon=False
+    )
+
+    plt.tight_layout()
+    _finish(fig, show=show, save=save)
+    return fig
+
+
+def window_transport(
+    adata: AnnData,
+    pair_index: int,
+    basis: str = "umap",
+    velocity_basis: str = "X_pca",
+    reg: float = 0.05,
+    lambda_time: float = 1.0,
+    lambda_knn: float = 1.0,
+    show_top_k: Optional[int] = None,
+    padding: float = 0.3,
+    background_alpha: float = 0.4,
+    background_size: int = 15,
+    background_color: str = "lightgray",
+    point_size: int = 60,
+    arrow_alpha: float = 0.4,
+    arrow_width: float = 0.003,
+    arrow_color: str = "black",
+    colorby_weight: bool = True,
+    cluster_key: Optional[str] = None,
+    frameon: bool = False,
+    show: bool = True,
+    save: Optional[str] = None,
+    figsize: tuple = (4,4),
+) -> plt.Figure:
+    """
+    Zoom into a window pair showing OT transport on the full dataset.
+
+    All cells are shown as context (gray or colored by cluster),
+    with source and target cells highlighted and transport arrows
+    overlaid. The axes are zoomed to the window region.
+
+    Parameters
+    ----------
+    adata
+        Must have windows computed.
+    pair_index
+        Index of the window pair to visualize.
+    basis
+        Embedding for visualization.
+    velocity_basis
+        Embedding where OT is computed (for recomputing the plan).
+    reg
+        Sinkhorn regularization.
+    lambda_time
+        Pseudotime backward penalty.
+    lambda_knn
+        Non-neighbor penalty.
+    show_top_k
+        Show arrows only to top-k targets per source cell.
+        None shows all above a threshold.
+    padding
+        Fractional padding around the window for zoom.
+    background_alpha
+        Transparency of background (non-window) cells.
+    background_size
+        Point size of background cells.
+    background_color
+        Color for background cells when ``cluster_key`` is None.
+    point_size
+        Size of source/target cells.
+    arrow_alpha
+        Arrow transparency.
+    arrow_width
+        Arrow line width.
+    arrow_color
+        Arrow color when ``colorby_weight=False``.
+    colorby_weight
+        Color arrows by transport weight.
+    cluster_key
+        If provided, background cells are colored by cluster
+        instead of uniform gray. Gives spatial context.
+    frameon
+        Show axes frame.
+    show
+        Display the figure.
+    save
+        File path to save.
+
+    Examples
+    --------
+    ::
+
+        # With cluster context
+        velot.pl.window_transport(adata, 5, cluster_key="clusters")
+
+        # Clean, gray background
+        velot.pl.window_transport(adata, 5)
+
+        # Top-3 connections only
+        velot.pl.window_transport(adata, 5, show_top_k=3)
+    """
+    import ot as pot
+
+    if "velot_windows" not in adata.uns:
+        raise ValueError("No windows found. Run velot.tl.build_windows() first.")
+
+    pairs = adata.uns["velot_windows"]["pairs"]
+    n_total = len(pairs)
+
+    if pair_index < 0 or pair_index >= n_total:
+        raise ValueError(
+            f"pair_index {pair_index} out of range (0 to {n_total - 1})."
+        )
+
+    idx_src, idx_tgt = pairs[pair_index]
+
+    # Visualization coordinates
+    coords_key = f"X_{basis}"
+    if coords_key not in adata.obsm:
+        raise ValueError(f"'{coords_key}' not found in adata.obsm.")
+    coords = adata.obsm[coords_key]
+
+    # OT computation coordinates
+    if velocity_basis not in adata.obsm:
+        raise ValueError(f"'{velocity_basis}' not found in adata.obsm.")
+    X = adata.obsm[velocity_basis]
+    pseudotime = adata.obs["pseudotime"].values
+
+    # ------------------------------------------------------------------
+    # Recompute transport plan
+    # ------------------------------------------------------------------
+    X_src = X[idx_src]
+    X_tgt = X[idx_tgt]
+    n_src = X_src.shape[0]
+    n_tgt = X_tgt.shape[0]
+
+    a = np.ones(n_src, dtype=np.float64) / n_src
+    b = np.ones(n_tgt, dtype=np.float64) / n_tgt
+
+    C = pot.dist(X_src, X_tgt, metric="sqeuclidean")
+    C_max = C.max()
+    if C_max > 0:
+        C = C / C_max
+
+    t_src = pseudotime[idx_src]
+    t_tgt = pseudotime[idx_tgt]
+    time_diff = t_src[:, None] - t_tgt[None, :]
+    C[time_diff > 0] += lambda_time
+
+    if "connectivities" in adata.obsp:
+        knn_adj = adata.obsp["connectivities"]
+        local_adj = knn_adj[idx_src][:, idx_tgt]
+        if hasattr(local_adj, "toarray"):
+            local_adj = local_adj.toarray()
+        C[local_adj == 0] += lambda_knn
+
+    try:
+        P = pot.sinkhorn(a, b, C, reg=reg, numItermax=300, stopThr=1e-6)
+    except Exception:
+        try:
+            P = pot.emd(a, b, C)
+        except Exception:
+            raise RuntimeError("OT computation failed for this pair.")
+
+    row_sums = P.sum(axis=1, keepdims=True)
+    row_sums[row_sums == 0] = 1.0
+    P_norm = P / row_sums
+
+    # ------------------------------------------------------------------
+    # Compute zoom region from window cells
+    # ------------------------------------------------------------------
+    coords_src = coords[idx_src]
+    coords_tgt = coords[idx_tgt]
+    all_window_coords = np.vstack([coords_src, coords_tgt])
+
+    x_min, y_min = all_window_coords.min(axis=0)
+    x_max, y_max = all_window_coords.max(axis=0)
+    x_range = max(x_max - x_min, 1e-6)
+    y_range = max(y_max - y_min, 1e-6)
+
+    xlim = (x_min - padding * x_range, x_max + padding * x_range)
+    ylim = (y_min - padding * y_range, y_max + padding * y_range)
+
+    # ------------------------------------------------------------------
+    # Identify which cells are in the zoomed region (for background)
+    # ------------------------------------------------------------------
+    in_view = (
+        (coords[:, 0] >= xlim[0]) & (coords[:, 0] <= xlim[1]) &
+        (coords[:, 1] >= ylim[0]) & (coords[:, 1] <= ylim[1])
+    )
+
+    # Cells that are in view but NOT in the window pair
+    all_window_idx = np.union1d(idx_src, idx_tgt)
+    is_window_cell = np.zeros(adata.n_obs, dtype=bool)
+    is_window_cell[all_window_idx] = True
+    bg_mask = in_view & ~is_window_cell
+
+    # ------------------------------------------------------------------
+    # Plot
+    # ------------------------------------------------------------------
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Layer 1: Background cells in the zoomed region
+    bg_indices = np.where(bg_mask)[0]
+
+    if cluster_key is not None and cluster_key in adata.obs:
+        categories = adata.obs[cluster_key].astype("category")
+        cat_names = categories.cat.categories.tolist()
+        codes = categories.cat.codes.values
+        cmap = plt.cm.tab20
+        colors_array = cmap(np.linspace(0, 1, len(cat_names)))
+
+        for ci, cat_name in enumerate(cat_names):
+            cat_bg = bg_indices[codes[bg_indices] == ci]
+            if len(cat_bg) > 0:
+                ax.scatter(
+                    coords[cat_bg, 0], coords[cat_bg, 1],
+                    s=background_size,
+                    c=[colors_array[ci]],
+                    alpha=background_alpha,
+                    label=cat_name,
+                    zorder=1,
+                )
+    else:
+        if len(bg_indices) > 0:
+            ax.scatter(
+                coords[bg_indices, 0], coords[bg_indices, 1],
+                s=background_size, c=background_color,
+                alpha=background_alpha, zorder=1,
+            )
+
+    # Layer 2: Transport arrows (behind the highlighted cells)
+    w_max = P_norm.max() if P_norm.max() > 0 else 1.0
+
+    for i in range(n_src):
+        src_coord = coords_src[i]
+
+        if show_top_k is not None:
+            top_indices = np.argsort(P_norm[i])[::-1][:show_top_k]
+        else:
+            threshold = 1.0 / (n_tgt * 5)
+            top_indices = np.where(P_norm[i] > threshold)[0]
+
+        for j in top_indices:
+            weight = P_norm[i, j]
+            if weight < 1e-10:
+                continue
+
+            tgt_coord = coords_tgt[j]
+            dx = tgt_coord[0] - src_coord[0]
+            dy = tgt_coord[1] - src_coord[1]
+
+            if colorby_weight:
+                intensity = min(1.0, weight / (w_max * 0.5))
+                color = plt.cm.Reds(0.3 + 0.7 * intensity)
+                alpha = max(0.1, min(0.8, arrow_alpha + 0.4 * intensity))
+                width = arrow_width * (0.5 + 1.5 * intensity)
+            else:
+                color = arrow_color
+                alpha = arrow_alpha
+                width = arrow_width
+
+            ax.annotate(
+                "",
+                xy=(tgt_coord[0], tgt_coord[1]),
+                xytext=(src_coord[0], src_coord[1]),
+                arrowprops=dict(
+                    arrowstyle="-|>",
+                    color=color,
+                    lw=width * 300,
+                    alpha=alpha,
+                    shrinkA=2, shrinkB=2,
+                    mutation_scale=12,
+                ),
+                zorder=2,
+            )
+
+    # Layer 3: Source and target cells on top
+    overlap = np.intersect1d(idx_src, idx_tgt)
+    src_only = np.setdiff1d(idx_src, overlap)
+    tgt_only = np.setdiff1d(idx_tgt, overlap)
+
+    if len(tgt_only) > 0:
+        ax.scatter(
+            coords[tgt_only, 0], coords[tgt_only, 1],
+            s=point_size, c="tab:orange", alpha=0.85,
+            edgecolors="black", linewidths=0.4,
+            label="target", zorder=4,
+        )
+    if len(src_only) > 0:
+        ax.scatter(
+            coords[src_only, 0], coords[src_only, 1],
+            s=point_size, c="tab:blue", alpha=0.85,
+            edgecolors="black", linewidths=0.4,
+            label="source", zorder=4,
+        )
+    if len(overlap) > 0:
+        ax.scatter(
+            coords[overlap, 0], coords[overlap, 1],
+            s=point_size, c="tab:green", alpha=0.85,
+            edgecolors="black", linewidths=0.4,
+            label="overlap", zorder=4,
+        )
+
+    # ------------------------------------------------------------------
+    # Zoom and formatting
+    # ------------------------------------------------------------------
+    ax.set_xlim(xlim)
+    ax.set_ylim(ylim)
+
+    # Legend without duplicate labels
+    handles, labels = ax.get_legend_handles_labels()
+    by_label = dict(zip(labels, handles))
+    ax.legend(
+        by_label.values(), by_label.keys(),
+        fontsize=20, loc="lower right", frameon=False, #framealpha=0.9,
+    )
+
+    # ax.set_title(
+    #     f"Window pair {pair_index} — OT transport\n"
+    #     f"src={n_src} cells (blue), tgt={n_tgt} cells (orange), "
+    #     f"reg={reg}",
+    #     fontsize=11,
+    # )
+
+    ax.set_title(
+        f"OT transport for pair {pair_index}", fontsize=26, fontfamily="sans serif"
+    )
+
+    if not frameon:
+        ax.axis("off")
+
+    plt.tight_layout()
+    _finish(fig, show=show, save=save)
+    return fig
+
+
+def velocity_stream(
+    adata: AnnData,
+    color: str = "clusters",
+    basis: str = "umap",
+    velocity_key: str = "velocity",
+    title: Optional[str] = "VelOT velocity",
+    show: bool = True,
+    save: Optional[str] = None,
+    figsize: tuple = (4,4),
+    **kwargs,
+) -> plt.Figure:
+    """
+    Stream plot of the velocity field.
+
+    Uses scVelo's stream plotting if available, falls back to a quiver
+    plot otherwise.
+
+    Parameters
+    ----------
+    adata
+        Must have ``adata.obsm['velocity_umap']``.
+    color
+        Column in adata.obs for cell coloring.
+    basis
+        Embedding basis.
+    velocity_key
+        Key in adata.obsm containing the velocity to plot.
+    title
+        Plot title. Defaults to "VelOT velocity".
+    show
+        Whether to display.
+    save
+        File path to save.
+    **kwargs
+        Passed to scvelo.pl.velocity_embedding_stream or quiver.
+
+    Returns
+    -------
+    matplotlib Figure.
+    """
+    # if velocity_key not in adata.obsm:
+    #     raise ValueError(
+    #         f"'{velocity_key}' not found in adata.obsm. "
+    #         f"Run velot.tl.velocity() first."
+    #     )
+
+    if _HAS_SCVELO:
+        # scVelo expects the velocity key to follow its naming convention
+        # velocity_umap is already the standard name
+        fig, ax = plt.subplots(figsize=figsize)
+        if basis == "umap":
+            adata.obsm["velocity_umap"] = adata.obsm["velocity_umap"]
+        elif basis =="pca":
+            adata.obsm["velocity_pca"] = adata.obsm["velot_velocity"]
+        else:
+            raise ValueError(
+                f"'{basis}' not implemented"
+            )
+
+        scv.pl.velocity_embedding_stream(
+            adata, basis=basis, vkey=velocity_key, color=color,
+            title="", ax=ax, show=False, **kwargs,
+        )
+        if title is not None:
+            ax.set_title(title, fontsize=18, fontfamily="sans serif")
+        add_umap_axis(ax)
+        _finish(fig, show=show, save=save)
+        return fig
+    else:
+        return velocity_quiver(
+            adata, color=color, basis=basis, velocity_key=velocity_key,
+            title=title, show=show, save=save, figsize=figsize,
+        )
+
+
+def velocity_quiver(
+    adata: AnnData,
+    color: str = "clusters",
+    basis: str = "umap",
+    velocity_key: str = "velocity_umap",
+    title: Optional[str] = None,
+    arrow_scale: float = 1.0,
+    subsample: Optional[int] = None,
+    show: bool = True,
+    save: Optional[str] = None,
+    figsize: tuple = (7, 6),
+) -> plt.Figure:
+    """
+    Quiver plot of velocity field (fallback if scVelo unavailable).
+
+    Parameters
+    ----------
+    adata
+        Must have velocity computed.
+    subsample
+        Number of cells to show arrows for. None for all.
+    arrow_scale
+        Multiplier for arrow length.
+
+    Returns
+    -------
+    matplotlib Figure.
+    """
+    coords_key = f"X_{basis}"
+    if coords_key not in adata.obsm or velocity_key not in adata.obsm:
+        raise ValueError(
+            f"Need '{coords_key}' and '{velocity_key}' in adata.obsm."
+        )
+
+    coords = adata.obsm[coords_key]
+    vel = adata.obsm[velocity_key]
+    title = title or "VelOT velocity (quiver)"
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Color by cluster
+    if color in adata.obs:
+        categories = adata.obs[color].astype("category")
+        codes = categories.cat.codes.values
+        cmap = plt.cm.tab20
+        ax.scatter(
+            coords[:, 0], coords[:, 1],
+            s=10, c=codes, cmap=cmap, alpha=0.5, zorder=1,
+        )
+    else:
+        ax.scatter(
+            coords[:, 0], coords[:, 1],
+            s=10, c="lightgray", alpha=0.5, zorder=1,
+        )
+
+    # Subsample for readability
+    if subsample is not None and subsample < adata.n_obs:
+        rng = np.random.RandomState(42)
+        idx = rng.choice(adata.n_obs, subsample, replace=False)
+    else:
+        idx = np.arange(adata.n_obs)
+
+    ax.quiver(
+        coords[idx, 0], coords[idx, 1],
+        vel[idx, 0] * arrow_scale, vel[idx, 1] * arrow_scale,
+        angles="xy", scale_units="xy", scale=1,
+        width=0.002, headwidth=4, alpha=0.7, zorder=2,
+    )
+
+    ax.set_title(title, fontsize=13)
+    ax.set_xlabel(f"{basis.upper()}1")
+    ax.set_ylabel(f"{basis.upper()}2")
+
+    plt.tight_layout()
+    _finish(fig, show=show, save=save)
+    return fig
+
+
+def confidence(
+    adata: AnnData,
+    basis: str = "umap",
+    show: bool = True,
+    save: Optional[str] = None,
+    figsize: tuple = (7, 6),
+) -> plt.Figure:
+    """
+    Plot per-cell velocity confidence (how many windows contributed).
+
+    Low confidence regions are where the OT velocity is uncertain
+    or missing, and the smoothing network is interpolating.
+
+    Returns
+    -------
+    matplotlib Figure.
+    """
+    if "velot_confidence" not in adata.obs:
+        raise ValueError("No confidence data. Run velot.tl.compute_ot_velocity() first.")
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    sc.pl.embedding(
+        adata, basis=basis, color="velot_confidence",
+        ax=ax, show=False, title="VelOT confidence",
+        color_map="YlOrRd", frameon=False,
+    )
+
+    plt.tight_layout()
+    _finish(fig, show=show, save=save)
+    return fig
+
+
+def training_curves(
+    adata: AnnData,
+    vertical: bool=False,
+    show: bool = True,
+    save: Optional[str] = None,
+    figsize: tuple = (10, 4),
+) -> plt.Figure:
+    """
+    Plot training loss curves from the smoothing step.
+
+    Returns
+    -------
+    matplotlib Figure.
+    """
+    if "velot_smoothing" not in adata.uns:
+        raise ValueError("No smoothing data. Run velot.tl.smooth_velocity() first.")
+
+    info = adata.uns["velot_smoothing"]
+
+    if vertical:
+        fig, axes = plt.subplots(2, 1, figsize=figsize, sharex=True)
+    
+    else:
+        fig, axes = plt.subplots(1, 2, figsize=figsize, sharey=True)
+
+    axes[0].plot(info["losses_regression"], color="tab:blue", alpha=0.8)
+    axes[0].set_title("Regression loss", fontsize=16)
+    axes[0].set_xlabel("Epoch")
+    axes[0].set_ylabel("Loss")
+    axes[0].set_yscale("log")
+
+    axes[1].plot(info["losses_smoothness"], color="tab:orange", alpha=0.8)
+    # axes[1].set_title(f"Smoothness loss (λ={info['lambda_smooth']})")
+    axes[1].set_title(f"Smoothness loss", fontsize=16)
+    axes[1].set_xlabel("Epoch")
+    axes[1].set_ylabel("Loss")
+    axes[1].set_yscale("log")
+
+    # fig.suptitle("VelOT smoothing training", fontsize=13, fontweight="bold")
+    plt.tight_layout()
+    _finish(fig, show=show, save=save)
+    return fig
+
+def training_curves_single(
+    adata: AnnData,
+    show: bool = True,
+    save: Optional[str] = None,
+    figsize: tuple = (7,7),
+) -> plt.Figure:
+    """
+    Plot training loss curves from the smoothing step.
+
+    Returns
+    -------
+    matplotlib Figure.
+    """
+    if "velot_smoothing" not in adata.uns:
+        raise ValueError("No smoothing data. Run velot.tl.smooth_velocity() first.")
+
+    info = adata.uns["velot_smoothing"]
+
+    fig, axes = plt.subplots(figsize=figsize)
+
+    losses = ["losses_regression", "losses_smoothness", "losses_curl"]
+    titles = ["Regression", "Smoothness", "Curl"]
+
+    for loss,title in zip(losses,titles):
+        axes.plot(info[loss], alpha=0.8, label=title)
+        axes.set_xlabel("Epoch")
+        axes.set_ylabel("Loss")
+        axes.set_yscale("log")
+    
+    axes.legend(loc="lower right")
+    _finish(fig, show=show, save=save)
+    return fig
+
+
+def spatial_clusters(
+    adata: AnnData,
+    basis: str = "umap",
+    show: bool = True,
+    save: Optional[str] = None,
+    figsize: tuple = (7, 6),
+) -> plt.Figure:
+    """
+    Visualize the spatial clusters used for windowing.
+
+    Returns
+    -------
+    matplotlib Figure.
+    """
+    if "velot_spatial_cluster" not in adata.obs:
+        raise ValueError(
+            "No spatial clusters. Run velot.tl.build_windows() first."
+        )
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    sc.pl.embedding(
+        adata, basis=basis, color="velot_spatial_cluster",
+        ax=ax, show=False, title="VelOT spatial clusters",
+        frameon=False, legend_loc="on data",
+    )
+
+    plt.tight_layout()
+    _finish(fig, show=show, save=save)
+    return fig
+
+
+def velocity_comparison(
+    adata: AnnData,
+    velocity_keys: Sequence[str],
+    titles: Optional[Sequence[str]] = None,
+    color: str = "clusters",
+    basis: str = "umap",
+    show: bool = True,
+    save: Optional[str] = None,
+    figsize_per_panel: tuple = (6, 5),
+) -> plt.Figure:
+    """
+    Side-by-side stream plots comparing multiple velocity fields.
+
+    Parameters
+    ----------
+    adata
+        Annotated data matrix.
+    velocity_keys
+        List of keys in adata.obsm with velocity fields to compare.
+    titles
+        Optional titles for each panel.
+
+    Returns
+    -------
+    matplotlib Figure.
+
+    Example
+    -------
+    ::
+
+        # Compare raw vs smoothed velocity
+        velot.pl.velocity_comparison(
+            adata,
+            velocity_keys=["velot_velocity_raw_umap", "velocity_umap"],
+            titles=["Raw OT", "Smoothed"],
+        )
+    """
+    if not _HAS_SCVELO:
+        raise ImportError(
+            "velocity_comparison requires scVelo for stream plots. "
+            "Install with: pip install scvelo"
+        )
+
+    n = len(velocity_keys)
+    titles = titles or velocity_keys
+
+    figsize = (figsize_per_panel[0] * n, figsize_per_panel[1])
+    fig, axes = plt.subplots(1, n, figsize=figsize)
+    if n == 1:
+        axes = [axes]
+
+    backup = adata.obsm.get("velocity_umap", None)
+
+    for i, (vkey, title) in enumerate(zip(velocity_keys, titles)):
+        if vkey not in adata.obsm:
+            axes[i].text(
+                0.5, 0.5, f"'{vkey}' not found",
+                ha="center", va="center", transform=axes[i].transAxes,
+            )
+            continue
+
+        adata.obsm["velocity_umap"] = adata.obsm[vkey]
+        scv.pl.velocity_embedding_stream(
+            adata, basis=basis, color=color,
+            title=title, ax=axes[i], show=False,
+        )
+
+    # Restore original
+    if backup is not None:
+        adata.obsm["velocity_umap"] = backup
+
+    plt.tight_layout()
+    _finish(fig, show=show, save=save)
+    return fig
+
+
+# =====================================================================
+# Internal helpers
+# =====================================================================
+
+
+def _finish(fig: plt.Figure, show: bool, save: Optional[str]):
+    """Handle show/save logic for all plot functions."""
+    if save is not None:
+        path = Path(save)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(path, dpi=300, bbox_inches="tight")
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+
+def gridsearch_results(
+    df,
+    metric: str = "iccoh_mean",
+    param_x: Optional[str] = None,
+    param_hue: Optional[str] = None,
+    show: bool = True,
+    save: Optional[str] = None,
+    figsize: tuple = (12, 5),
+) -> plt.Figure:
+    """
+    Visualize grid search results.
+
+    Parameters
+    ----------
+    df
+        DataFrame returned by ``velot.tl.gridsearch()``.
+    metric
+        Column to plot as the y-axis.
+    param_x
+        Parameter for x-axis grouping. If None, auto-detected.
+    param_hue
+        Parameter for color grouping. If None, auto-detected.
+    show
+        Whether to display.
+    save
+        File path to save.
+
+    Returns
+    -------
+    matplotlib Figure.
+
+    Example
+    -------
+    ::
+
+        results = velot.tl.gridsearch(adata, param_grid, ...)
+        velot.pl.gridsearch_results(results, metric="cbdir_mean")
+    """
+    # Auto-detect parameters (columns that aren't metrics)
+    non_param_cols = {
+        "iccoh_mean", "cbdir_mean", "elapsed_seconds", "status",
+    }
+    param_cols = [
+        c for c in df.columns
+        if c not in non_param_cols and not c.startswith(("iccoh_", "cbdir_"))
+    ]
+
+    if not param_cols:
+        raise ValueError("No parameter columns detected in DataFrame.")
+
+    if param_x is None:
+        param_x = param_cols[0]
+    if param_hue is None and len(param_cols) > 1:
+        param_hue = param_cols[1]
+
+    # Filter to successful runs
+    df_ok = df[df["status"] == "ok"].copy()
+    if len(df_ok) == 0:
+        raise ValueError("No successful runs to plot.")
+
+    fig, axes = plt.subplots(1, 2, figsize=figsize)
+
+    # Panel 1: metric vs param_x, colored by param_hue
+    ax = axes[0]
+    if param_hue is not None:
+        hue_values = sorted(df_ok[param_hue].unique())
+        colors = plt.cm.tab10(np.linspace(0, 1, len(hue_values)))
+
+        for hue_val, color in zip(hue_values, colors):
+            mask = df_ok[param_hue] == hue_val
+            subset = df_ok[mask].sort_values(param_x)
+            ax.plot(
+                subset[param_x].astype(str), subset[metric],
+                "o-", label=f"{param_hue}={hue_val}",
+                color=color, markersize=8, alpha=0.8,
+            )
+        ax.legend(fontsize=8)
+    else:
+        df_sorted = df_ok.sort_values(param_x)
+        ax.plot(
+            df_sorted[param_x].astype(str), df_sorted[metric],
+            "o-", color="tab:blue", markersize=8,
+        )
+
+    ax.set_xlabel(param_x)
+    ax.set_ylabel(metric)
+    ax.set_title(f"{metric} vs {param_x}")
+    ax.tick_params(axis="x", rotation=45)
+
+    # Panel 2: summary bar chart of top 10 runs
+    ax = axes[1]
+    top = df_ok.nlargest(min(10, len(df_ok)), metric)
+
+    labels = []
+    for _, row in top.iterrows():
+        parts = [f"{p}={row[p]}" for p in param_cols]
+        labels.append("\n".join(parts))
+
+    bars = ax.barh(
+        range(len(top)), top[metric].values,
+        color="tab:green", alpha=0.7,
+    )
+    ax.set_yticks(range(len(top)))
+    ax.set_yticklabels(labels, fontsize=7)
+    ax.set_xlabel(metric)
+    ax.set_title(f"Top {len(top)} configurations")
+    ax.invert_yaxis()
+
+    fig.suptitle("VelOT Grid Search Results", fontsize=14, fontweight="bold")
+    plt.tight_layout()
+    _finish(fig, show=show, save=save)
+    return fig
+
+
+def trajectories(
+    adata: AnnData,
+    trajectory_ids: Optional[Sequence[int]] = None,
+    color: str = "clusters",
+    basis: str = "umap",
+    line_color: str = "black",
+    line_alpha: float = 0.7,
+    line_width: float = 1,
+    line_style: str = "--",
+    start_marker: str = "o",
+    start_size: int = 50,
+    start_color: str = "gray",
+    end_marker: str = "o",
+    end_size: int = 50,
+    end_color: str = "black",
+    arrow_frequency: int = 30,
+    arrow_size: float = 10,
+    show_start: bool = True,
+    show_end: bool = True,
+    show_arrows: bool = True,
+    frameon: bool = False,
+    title: Optional[str] = None,
+    ax: Optional[plt.Axes] = None,
+    show: bool = True,
+    save: Optional[str] = None,
+    figsize: tuple = (8, 7),
+    **scanpy_kwargs,
+) -> plt.Figure:
+    """
+    Plot cell trajectories on top of a scanpy embedding plot.
+
+    Parameters
+    ----------
+    adata
+        Must have ``adata.uns['velot_trajectories']``.
+    trajectory_ids
+        List of trajectory IDs to plot. If None, plots all.
+        IDs are stored in each trajectory's metadata ``"id"`` field.
+        Use this to select specific trajectories after inspecting
+        the metadata.
+    color
+        Column passed to ``sc.pl.embedding``.
+    basis
+        Embedding basis.
+    line_color
+        Color of trajectory lines.
+    line_alpha
+        Line transparency.
+    line_width
+        Line width.
+    line_style
+        ``"-"`` solid, ``"--"`` dashed, ``":"`` dotted.
+    start_marker, start_size, start_color
+        Start point appearance.
+    end_marker, end_size, end_color
+        End point appearance.
+    arrow_frequency
+        Arrow every N steps.
+    arrow_size
+        Arrowhead size.
+    show_start, show_end, show_arrows
+        Toggle visual elements.
+    frameon
+        Show axes frame.
+    title
+        Plot title.
+    ax
+        Pre-existing axes. If None, creates new with scanpy.
+    show
+        Display.
+    save
+        Save path.
+    **scanpy_kwargs
+        Passed to ``sc.pl.embedding``.
+
+    Returns
+    -------
+    matplotlib Figure.
+
+    Examples
+    --------
+    Plot all trajectories::
+
+        velot.pl.trajectories(adata)
+
+    Plot specific trajectories by ID::
+
+        velot.pl.trajectories(adata, trajectory_ids=[0, 3, 7])
+
+    Inspect metadata to choose which to plot::
+
+        meta = adata.uns["velot_trajectories"]["metadata"]
+        for m in meta:
+            print(f"ID {m['id']}: {m['origin_cluster']} → {m['terminal_cluster']} "
+                  f"({m['n_steps']} steps)")
+        # Pick the ones you like
+        velot.pl.trajectories(adata, trajectory_ids=[2, 5])
+    """
+    if "velot_trajectories" not in adata.uns:
+        raise ValueError(
+            "No trajectories found. Run velot.tl.compute_trajectories() first."
+        )
+
+    traj_data = adata.uns["velot_trajectories"]
+    all_paths = traj_data["paths_umap"]
+    all_metadata = traj_data["metadata"]
+
+    if not all_paths:
+        raise ValueError("No UMAP-projected trajectories available.")
+
+    # Filter by trajectory_ids if specified
+    if trajectory_ids is not None:
+        id_set = set(trajectory_ids)
+        selected = [
+            (path, meta)
+            for path, meta in zip(all_paths, all_metadata)
+            if meta["id"] in id_set
+        ]
+        if not selected:
+            available_ids = [m["id"] for m in all_metadata]
+            raise ValueError(
+                f"No trajectories found with IDs {trajectory_ids}. "
+                f"Available IDs: {available_ids}"
+            )
+        paths = [s[0] for s in selected]
+        metadata = [s[1] for s in selected]
+    else:
+        paths = all_paths
+        metadata = all_metadata
+
+    # ------------------------------------------------------------------
+    # Background: scanpy embedding
+    # ------------------------------------------------------------------
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+        scv.pl.scatter(
+            adata,
+            basis=basis,
+            color=color,
+            ax=ax,
+            show=False,
+            frameon=frameon,
+            legend_loc="on data",
+            **scanpy_kwargs,
+        )
+    else:
+        fig = ax.get_figure()
+
+    # ------------------------------------------------------------------
+    # Overlay trajectories
+    # ------------------------------------------------------------------
+    for traj_i, (path, meta) in enumerate(zip(paths, metadata)):
+        if len(path) < 2:
+            continue
+
+        is_backward = meta["direction"] == "backward"
+
+        if is_backward:
+            display_path = path[::-1]
+        else:
+            display_path = path
+
+        # Trajectory line
+        ax.plot(
+            display_path[:, 0], display_path[:, 1],
+            color=line_color, alpha=line_alpha,
+            linewidth=line_width, linestyle=line_style,
+            zorder=10,
+        )
+
+        # Start point
+        if show_start:
+            ax.scatter(
+                display_path[0, 0], display_path[0, 1],
+                s=start_size, c=start_color,
+                marker=start_marker,
+                edgecolors="black", linewidths=0.5,
+                zorder=12,
+            )
+
+        # End point
+        if show_end:
+            ax.scatter(
+                display_path[-1, 0], display_path[-1, 1],
+                s=end_size, c=end_color,
+                marker=end_marker,
+                edgecolors="white", linewidths=0.5,
+                zorder=12,
+            )
+
+        # Direction arrows
+        if show_arrows:
+            for step in range(arrow_frequency, len(display_path) - 1, arrow_frequency):
+                dx = display_path[step + 1, 0] - display_path[step, 0]
+                dy = display_path[step + 1, 1] - display_path[step, 1]
+                mag = np.sqrt(dx**2 + dy**2)
+                if mag > 1e-10:
+                    ax.annotate(
+                        "",
+                        xy=(display_path[step, 0] + dx * 0.5,
+                            display_path[step, 1] + dy * 0.5),
+                        xytext=(display_path[step, 0],
+                                display_path[step, 1]),
+                        arrowprops=dict(
+                            arrowstyle="-|>",
+                            color=line_color,
+                            lw=line_width * 0.6,
+                            alpha=line_alpha,
+                            mutation_scale=arrow_size,
+                        ),
+                        zorder=11,
+                    )
+
+    # Title
+    direction = traj_data.get("direction", "forward")
+    start = traj_data.get("start_cluster", "?")
+    target = traj_data.get("target_cluster", None)
+    n_shown = len(paths)
+
+    if title is None:
+        title = ""
+    if title == "auto":
+        parts = []
+        if direction == "backward":
+            parts.append(f"Backward from '{start}'")
+        else:
+            parts.append(f"Forward from '{start}'")
+        if target:
+            parts.append(f"→ '{target}'")
+        parts.append(f"(n={n_shown})")
+        title = " ".join(parts)
+
+    ax.set_title(title, fontsize=12)
+
+    plt.tight_layout()
+    _finish(fig, show=show, save=save)
+    return fig
+
+def fate_summary(
+    adata: AnnData,
+    show: bool = True,
+    save: Optional[str] = None,
+    figsize: tuple = (8, 4),
+) -> plt.Figure:
+    """
+    Bar chart summarizing trajectory fate or origin.
+
+    For forward trajectories: shows terminal cluster distribution.
+    For backward trajectories: shows origin cluster distribution.
+
+    Returns
+    -------
+    matplotlib Figure.
+    """
+    if "velot_trajectories" not in adata.uns:
+        raise ValueError(
+            "No trajectories found. Run velot.tl.compute_trajectories() first."
+        )
+
+    traj_data = adata.uns["velot_trajectories"]
+    metadata = traj_data["metadata"]
+    start_cluster = traj_data.get("start_cluster", "unknown")
+    direction = traj_data.get("direction", "forward")
+
+    # Separate by direction if "both"
+    groups = {}
+    for m in metadata:
+        d = m["direction"]
+        if d not in groups:
+            groups[d] = []
+        groups[d].append(m)
+
+    n_panels = len(groups)
+    fig, axes = plt.subplots(1, n_panels, figsize=(figsize[0] * n_panels / 2, figsize[1]))
+    if n_panels == 1:
+        axes = [axes]
+
+    for ax, (dir_name, dir_meta) in zip(axes, groups.items()):
+        if dir_name == "forward":
+            values = [m["terminal_cluster"] for m in dir_meta]
+            ylabel = "Fraction of trajectories"
+            subtitle = f"Forward from '{start_cluster}': terminal fates"
+        else:
+            values = [m["origin_cluster"] for m in dir_meta]
+            ylabel = "Fraction of trajectories"
+            subtitle = f"Backward from '{start_cluster}': traced origins"
+
+        unique, counts = np.unique(values, return_counts=True)
+        fractions = counts / counts.sum()
+
+        order = np.argsort(-fractions)
+        unique = unique[order]
+        fractions = fractions[order]
+        counts = counts[order]
+
+        bars = ax.bar(
+            range(len(unique)), fractions,
+            color=plt.cm.tab20(np.linspace(0, 1, len(unique))),
+            edgecolor="black", linewidth=0.5,
+        )
+
+        ax.set_xticks(range(len(unique)))
+        ax.set_xticklabels(unique, rotation=45, ha="right", fontsize=9)
+        ax.set_ylabel(ylabel)
+        ax.set_title(subtitle, fontsize=11)
+
+        for bar, count, frac in zip(bars, counts, fractions):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + 0.01,
+                f"{count} ({frac:.0%})",
+                ha="center", va="bottom", fontsize=8,
+            )
+
+        ax.set_ylim(0, min(1.0, fractions.max() * 1.3))
+
+    fig.suptitle("VelOT trajectory fate analysis", fontsize=13, fontweight="bold")
+    plt.tight_layout()
+    _finish(fig, show=show, save=save)
+    return fig
+
+
+def flow_simulation(
+    adata: AnnData,
+    color: str = "clusters",
+    basis: str = "umap",
+    line_alpha: float = 0.3,
+    line_width: float = 0.8,
+    colorby: str = "pseudotime",
+    show_cells: bool = True,
+    cell_alpha: float = 0.2,
+    cell_size: int = 8,
+    show_start: bool = True,
+    show_end: bool = True,
+    frameon: bool = False,
+    title: Optional[str] = None,
+    show: bool = True,
+    save: Optional[str] = None,
+    figsize: tuple = (9, 8),
+) -> plt.Figure:
+    """
+    Visualize the flow simulation — particles flowing through
+    the velocity field like water through a river.
+
+    Parameters
+    ----------
+    adata
+        Must have ``adata.uns['velot_flow']`` from
+        ``velot.tl.simulate_flow()``.
+    color
+        Column for background cell coloring.
+    basis
+        Embedding basis.
+    colorby
+        How to color trajectories:
+          - ``"pseudotime"``: color by pseudotime along trajectory
+            (blue=early, red=late)
+          - ``"cluster"``: color by starting cluster
+          - ``"fate"``: color by terminal cluster
+    show_cells
+        Show background cells.
+    cell_alpha
+        Background cell transparency.
+    cell_size
+        Background cell size.
+    show_start
+        Mark starting positions with stars.
+    show_end
+        Mark ending positions with dots.
+    frameon
+        Show axes frame.
+    title
+        Plot title.
+    show
+        Display the plot.
+    save
+        File path to save.
+
+    Returns
+    -------
+    matplotlib Figure.
+    """
+    if "velot_flow" not in adata.uns:
+        raise ValueError(
+            "No flow data. Run velot.tl.simulate_flow() first."
+        )
+
+    flow = adata.uns["velot_flow"]
+    paths = flow["particles_umap"]
+    pt_along = flow["pseudotime_along"]
+    cl_along = flow["cluster_along"]
+
+    if not paths:
+        raise ValueError("No UMAP-projected flow paths available.")
+
+    coords_key = f"X_{basis}"
+    coords = adata.obsm[coords_key]
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Background cells
+    if show_cells and color in adata.obs:
+        categories = adata.obs[color].astype("category")
+        cat_names = categories.cat.categories.tolist()
+        codes = categories.cat.codes.values
+        cmap_bg = plt.cm.tab20
+        colors_array = cmap_bg(np.linspace(0, 1, len(cat_names)))
+
+        for ci, cat_name in enumerate(cat_names):
+            mask = codes == ci
+            ax.scatter(
+                coords[mask, 0], coords[mask, 1],
+                s=cell_size, c=[colors_array[ci]],
+                alpha=cell_alpha, label=cat_name, zorder=1,
+            )
+    elif show_cells:
+        ax.scatter(
+            coords[:, 0], coords[:, 1],
+            s=cell_size, c="lightgray", alpha=cell_alpha, zorder=1,
+        )
+
+    # Draw particle trajectories
+    for p_idx, path in enumerate(paths):
+        if len(path) < 2:
+            continue
+
+        if colorby == "pseudotime":
+            # Color each segment by local pseudotime
+            pts = pt_along[p_idx]
+            for step in range(len(path) - 1):
+                pt_val = pts[min(step, len(pts) - 1)]
+                seg_color = plt.cm.coolwarm(pt_val)
+                ax.plot(
+                    path[step:step+2, 0], path[step:step+2, 1],
+                    color=seg_color, alpha=line_alpha,
+                    linewidth=line_width, zorder=2,
+                )
+
+        elif colorby == "fate":
+            terminal = cl_along[p_idx][-1]
+            if color in adata.obs and terminal in cat_names:
+                lc = colors_array[cat_names.index(terminal)]
+            else:
+                lc = "gray"
+            ax.plot(
+                path[:, 0], path[:, 1],
+                color=lc, alpha=line_alpha,
+                linewidth=line_width, zorder=2,
+            )
+
+        else:
+            ax.plot(
+                path[:, 0], path[:, 1],
+                color="steelblue", alpha=line_alpha,
+                linewidth=line_width, zorder=2,
+            )
+
+        # Start marker
+        if show_start:
+            ax.scatter(
+                path[0, 0], path[0, 1],
+                s=30, c="blue", marker="*",
+                edgecolors="white", linewidths=0.3,
+                alpha=0.7, zorder=4,
+            )
+
+        # End marker
+        if show_end:
+            ax.scatter(
+                path[-1, 0], path[-1, 1],
+                s=15, c="red", marker="o",
+                edgecolors="white", linewidths=0.3,
+                alpha=0.7, zorder=4,
+            )
+
+    # Legend for background
+    if show_cells and color in adata.obs:
+        ax.legend(fontsize=7, loc="best", markerscale=2, framealpha=0.8)
+
+    # Title with summary
+    meta = flow["metadata"]
+    source = flow["source"]
+    n = flow["n_particles"]
+    if title is None:
+        title = (
+            f"Flow simulation: {n} particles from {source}\n"
+            f"Mean final τ = {meta['mean_final_pseudotime']:.2f}, "
+            f"mean {meta['mean_trajectory_length']:.0f} steps"
+        )
+
+    ax.set_title(title, fontsize=11)
+
+    if not frameon:
+        ax.axis("off")
+
+    plt.tight_layout()
+    _finish(fig, show=show, save=save)
+    return fig
+
+
+def metric_summary(
+    metrics: dict,
+    orientation: str = "horizontal",
+    layout: str = "row",
+    figsize: Optional[tuple] = None,
+    palette_name: str = "Set2",
+    median_color: str = "black",
+    frameon: bool = True,
+    show: bool = True,
+    save: Optional[str] = None,
+) -> plt.Figure:
+    """
+    Box plots of ICCoh and CBDir metrics from a precomputed summary.
+
+    Parameters
+    ----------
+    metrics
+        Dictionary returned by ``velot.metrics.summary()``.
+    orientation
+        ``"horizontal"`` or ``"vertical"`` box plots.
+    layout
+        ``"row"`` or ``"column"``.
+    figsize
+        Custom figure size.
+    palette_name
+        Seaborn color palette name. First color for ICCoh,
+        second for CBDir.
+    median_color
+        Median line color.
+    frameon
+        Show axes frame.
+    show
+        Display the figure.
+    save
+        File path to save.
+
+    Returns
+    -------
+    matplotlib Figure.
+    """
+    import seaborn as sns
+    from matplotlib.colors import ListedColormap
+
+    if "iccoh" not in metrics:
+        raise ValueError(
+            "metrics dict must contain 'iccoh'. "
+            "Pass the output of velot.metrics.summary()."
+        )
+
+    palette = sns.color_palette(palette_name, 8)
+    color_iccoh = palette[0]
+    color_cbdir = palette[1]
+
+    iccoh = metrics["iccoh"]
+    sample_val = next(iter(iccoh.values()))
+    iccoh_is_raw = isinstance(sample_val, (list, np.ndarray))
+
+    has_cbdir = "cbdir" in metrics and len(metrics["cbdir"]) > 0
+    n_panels = 2 if has_cbdir else 1
+
+    if layout == "row":
+        nrows, ncols = 1, n_panels
+        default_figsize = (6 * n_panels, 5)
+    else:
+        nrows, ncols = n_panels, 1
+        default_figsize = (7, 5 * n_panels)
+
+    figsize = figsize or default_figsize
+    fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
+    if n_panels == 1:
+        axes = [axes]
+    elif isinstance(axes, np.ndarray):
+        axes = axes.flatten()
+
+    horiz = orientation == "horizontal"
+
+    medianprops = dict(color=median_color, linewidth=2)
+    whiskerprops = dict(color="black")
+    capprops = dict(color="black")
+    meanprops = dict(
+        marker="o", markerfacecolor="white",
+        markeredgecolor="black", markersize=6,
+    )
+
+    def _draw_panel(ax, data_dict, labels_str, panel_color, title, mean_val, xlabel):
+        data_list = list(data_dict.values())
+        positions = list(range(len(labels_str)))
+
+        boxprops = dict(facecolor=panel_color, edgecolor="black", alpha=0.6)
+
+        bp = ax.boxplot(
+            data_list,
+            positions=positions,
+            vert=not horiz,
+            patch_artist=True,
+            showmeans=True,
+            showfliers=False,
+            boxprops=boxprops,
+            medianprops=medianprops,
+            whiskerprops=whiskerprops,
+            capprops=capprops,
+            meanprops=meanprops,
+            widths=0.6,
+        )
+
+        if horiz:
+            ax.set_yticks(positions)
+            ax.set_yticklabels(labels_str, fontsize=12)
+            ax.set_xlim(-1.05, 1.05)
+            ax.set_xlabel(xlabel, fontsize=14)
+            ax.axvline(0, color="gray", linestyle="--", alpha=0.4, linewidth=0.8)
+        else:
+            ax.set_xticks(positions)
+            ax.set_xticklabels(labels_str, fontsize=12, rotation=45, ha="right")
+            ax.set_ylim(-1.05, 1.05)
+            ax.set_ylabel(xlabel, fontsize=14)
+            ax.axhline(0, color="gray", linestyle="--", alpha=0.4, linewidth=0.8)
+
+        ax.set_title(title, fontsize=16) #, fontweight="bold")
+
+        # Mean as text in upper left corner
+        # ax.text(
+        #     0.05, 0.95,
+        #     f"mean = {mean_val:.3f}",
+        #     transform=ax.transAxes,
+        #     fontsize=10, fontweight="bold",
+        #     va="top", ha="left",
+        #     bbox=dict(
+        #         boxstyle="round,pad=0.3",
+        #         facecolor=panel_color, alpha=0.3,
+        #         edgecolor="black", linewidth=0.5,
+        #     ),
+        # )
+        ax.text(
+            0.05, 0.95,
+            f"mean = {mean_val:.2f}",
+            transform=ax.transAxes,
+            fontsize=14, fontweight="bold",
+            va="top", ha="left",
+        )
+
+    # ------------------------------------------------------------------
+    # Panel 1: ICCoh
+    # ------------------------------------------------------------------
+    iccoh_labels = sorted(iccoh.keys(), key=str)
+    if iccoh_is_raw:
+        iccoh_ordered = {k: iccoh[k] for k in iccoh_labels}
+    else:
+        iccoh_ordered = {k: [iccoh[k]] for k in iccoh_labels}
+
+    iccoh_labels_str = [str(k) for k in iccoh_labels]
+    iccoh_mean = metrics.get(
+        "iccoh_mean",
+        np.mean([np.mean(v) for v in iccoh_ordered.values() if len(v) > 0]),
+    )
+
+    _draw_panel(
+        axes[0], iccoh_ordered, iccoh_labels_str,
+        color_iccoh, "",
+        iccoh_mean, "ICCoh score",
+    )
+
+    # ------------------------------------------------------------------
+    # Panel 2: CBDir
+    # ------------------------------------------------------------------
+    if has_cbdir:
+        cbdir = metrics["cbdir"]
+        sample_cbdir_val = next(iter(cbdir.values()))
+        cbdir_is_raw = isinstance(sample_cbdir_val, (list, np.ndarray))
+
+        cbdir_labels = list(cbdir.keys())
+        if cbdir_is_raw:
+            cbdir_ordered = {k: cbdir[k] for k in cbdir_labels}
+        else:
+            cbdir_ordered = {k: [cbdir[k]] for k in cbdir_labels}
+
+        cbdir_labels_str = []
+        for k in cbdir_labels:
+            if isinstance(k, tuple):
+                cbdir_labels_str.append(f"{k[0]} → {k[1]}")
+            else:
+                cbdir_labels_str.append(str(k))
+
+        cbdir_mean = metrics.get(
+            "cbdir_mean",
+            np.mean([np.mean(v) for v in cbdir_ordered.values() if len(v) > 0]),
+        )
+
+        _draw_panel(
+            axes[1], cbdir_ordered, cbdir_labels_str,
+            color_cbdir, "",
+            cbdir_mean, "CBDir score",
+        )
+
+    # fig.suptitle("VelOT Velocity Metrics", fontsize=24, fontfamily="sans serif")
+    plt.tight_layout()
+    _finish(fig, show=show, save=save)
+    return fig
+
+=== file: pp.py ===
+"""
+velot.pp — Preprocessing
+========================
+
+Prepares an AnnData object for the VelOT pipeline.
+Follows the scanpy convention: functions modify adata in place
+and return it for optional chaining.
+
+Typical usage::
+
+    import velot
+
+    # All-in-one
+    velot.pp.prepare(adata, n_pcs=30, root_cluster="Root")
+
+    # Or step by step
+    velot.pp.normalize(adata)
+    velot.pp.select_genes(adata, n_hvg=2000)
+    velot.pp.pca(adata, n_pcs=30)
+    velot.pp.neighbors(adata)
+    velot.pp.umap(adata)
+    velot.pp.pseudotime(adata, root_cluster="Root")
+"""
+
+from __future__ import annotations
+
+import warnings
+from typing import Optional
+
+import numpy as np
+import scanpy as sc
+from anndata import AnnData
+
+
+# ======================================================================
+# Individual preprocessing steps
+# ======================================================================
+
+
+def normalize(adata: AnnData, target_sum: float = 1e4) -> AnnData:
+    """
+    Total-count normalize and log-transform.
+
+    Parameters
+    ----------
+    adata
+        Annotated data matrix with raw counts in adata.X.
+    target_sum
+        Target total counts per cell after normalization.
+
+    Returns
+    -------
+    adata, modified in place.
+    """
+    sc.pp.normalize_total(adata, target_sum=target_sum)
+    sc.pp.log1p(adata)
+    return adata
+
+
+def select_genes(
+    adata: AnnData,
+    n_hvg: int = 2000,
+    flavor: str = "seurat",
+) -> AnnData:
+    """
+    Select highly variable genes and subset the data.
+
+    Parameters
+    ----------
+    adata
+        Annotated data matrix (should be log-normalized).
+    n_hvg
+        Number of highly variable genes to keep.
+    flavor
+        HVG selection method passed to scanpy.
+
+    Returns
+    -------
+    adata, subsetted to HVGs in place.
+    """
+    if adata.n_vars <= n_hvg:
+        return adata
+
+    sc.pp.highly_variable_genes(
+        adata, n_top_genes=n_hvg, flavor=flavor, subset=False,
+    )
+    adata._inplace_subset_var(adata.var["highly_variable"].values)
+    return adata
+
+
+def scale(adata: AnnData) -> AnnData:
+    """
+    Scale to zero mean and unit variance per gene.
+
+    This ensures PCA captures correlation structure rather than
+    being dominated by highly-expressed genes.
+
+    Returns
+    -------
+    adata, modified in place.
+    """
+    sc.pp.scale(adata)
+    return adata
+
+
+def pca(adata: AnnData, n_pcs: int = 30) -> AnnData:
+    """
+    Compute PCA embedding.
+
+    The PCA coordinates (adata.obsm['X_pca']) are the space where
+    velocity will be computed. This is NOT just for visualization.
+
+    Returns
+    -------
+    adata with adata.obsm['X_pca'] populated.
+    """
+    sc.tl.pca(adata, n_comps=n_pcs, svd_solver="arpack")
+    return adata
+
+
+def neighbors(
+    adata: AnnData,
+    n_pcs: int = 30,
+    n_neighbors: int = 30,
+) -> AnnData:
+    """
+    Compute the KNN graph.
+
+    The KNN graph is used downstream for:
+      - OT cost matrix locality penalties
+      - Velocity smoothing (KNN consistency)
+      - Pseudotime computation (DPT)
+
+    Returns
+    -------
+    adata with adata.obsp['connectivities'] and adata.obsp['distances'].
+    """
+    sc.pp.neighbors(adata, n_pcs=n_pcs, n_neighbors=n_neighbors)
+    return adata
+
+
+def umap(adata: AnnData) -> AnnData:
+    """
+    Compute UMAP embedding (for visualization only).
+
+    VelOT does NOT compute velocity in UMAP space. UMAP coordinates
+    are used only for plotting.
+
+    Returns
+    -------
+    adata with adata.obsm['X_umap'] populated.
+    """
+    sc.tl.umap(adata)
+    return adata
+
+
+def pseudotime(
+    adata: AnnData,
+    *,
+    key: Optional[str] = None,
+    root_cluster: Optional[str] = None,
+    root_cell: Optional[int] = None,
+    cluster_key: str = "clusters",
+) -> AnnData:
+    """
+    Compute or load pseudotime ordering.
+
+    Three modes:
+      1. ``key`` provided: load precomputed pseudotime from adata.obs[key]
+      2. ``root_cell`` provided: run DPT from that cell index
+      3. ``root_cluster`` provided: run DPT from the first cell in that cluster
+
+    DPT (Diffusion Pseudotime) computes temporal ordering from the
+    expression geometry alone — no velocity or spliced/unspliced
+    information is used. This keeps the velocity estimation independent.
+
+    Parameters
+    ----------
+    adata
+        Must already have the KNN graph computed (run ``velot.pp.neighbors``
+        first).
+    key
+        Column name in adata.obs with precomputed pseudotime.
+    root_cluster
+        Cluster name to use as root for DPT.
+    root_cell
+        Cell index to use as root for DPT. Overrides root_cluster.
+    cluster_key
+        Column in adata.obs with cluster labels.
+
+    Returns
+    -------
+    adata with adata.obs['pseudotime'] in [0, 1].
+    """
+    if key is not None:
+        pt = _load_pseudotime(adata, key)
+    else:
+        pt = _compute_dpt(
+            adata,
+            root_cluster=root_cluster,
+            root_cell=root_cell,
+            cluster_key=cluster_key,
+        )
+
+    adata.obs["pseudotime"] = _normalize_01(pt)
+    return adata
+
+
+# ======================================================================
+# All-in-one convenience function
+# ======================================================================
+
+
+def prepare(
+    adata: AnnData,
+    *,
+    n_pcs: int = 30,
+    n_neighbors: int = 30,
+    n_hvg: Optional[int] = 2000,
+    pseudotime_key: Optional[str] = None,
+    root_cluster: Optional[str] = None,
+    root_cell: Optional[int] = None,
+    cluster_key: str = "clusters",
+    do_normalize: bool = True,
+    copy: bool = True,
+) -> AnnData:
+    """
+    Full preprocessing in one call.
+
+    Runs: normalize → select_genes → scale → PCA → neighbors →
+    UMAP → pseudotime.
+
+    Parameters
+    ----------
+    adata
+        Raw or partially processed AnnData object.
+    n_pcs
+        Number of principal components.
+    n_neighbors
+        Number of neighbors for KNN graph.
+    n_hvg
+        Number of HVGs to select. None to skip.
+    pseudotime_key
+        Precomputed pseudotime column name. If provided, DPT is skipped.
+    root_cluster
+        Root cluster for DPT.
+    root_cell
+        Root cell index for DPT.
+    cluster_key
+        Column with cluster labels.
+    do_normalize
+        Whether to normalize + log1p. Set False if already done.
+    copy
+        Whether to operate on a copy of adata.
+
+    Returns
+    -------
+    Preprocessed adata.
+
+    Example
+    -------
+    ::
+
+        import velot
+        import scvelo as scv
+
+        adata = scv.datasets.pancreas()
+        velot.pp.prepare(adata, root_cluster="Ductal", cluster_key="clusters")
+    """
+    if copy:
+        adata = adata.copy()
+
+    if do_normalize:
+        normalize(adata)
+
+    if n_hvg is not None:
+        select_genes(adata, n_hvg=n_hvg)
+
+    scale(adata)
+    pca(adata, n_pcs=n_pcs)
+    neighbors(adata, n_pcs=n_pcs, n_neighbors=n_neighbors)
+    umap(adata)
+
+    pseudotime(
+        adata,
+        key=pseudotime_key,
+        root_cluster=root_cluster,
+        root_cell=root_cell,
+        cluster_key=cluster_key,
+    )
+
+    # Store pipeline parameters for reproducibility
+    adata.uns["velot_params"] = {
+        "n_pcs": n_pcs,
+        "n_neighbors": n_neighbors,
+        "n_hvg": n_hvg,
+        "pseudotime_source": pseudotime_key or "dpt",
+    }
+
+    return adata
+
+
+# ======================================================================
+# Internal helpers
+# ======================================================================
+
+
+def _load_pseudotime(adata: AnnData, key: str) -> np.ndarray:
+    """Load and validate a precomputed pseudotime column."""
+    if key not in adata.obs:
+        raise KeyError(
+            f"Pseudotime column '{key}' not found in adata.obs. "
+            f"Available columns: {list(adata.obs.columns)}"
+        )
+    pt = adata.obs[key].values.astype(np.float64)
+
+    n_nan = np.isnan(pt).sum()
+    if n_nan > 0:
+        warnings.warn(
+            f"Pseudotime column '{key}' contains {n_nan} NaN values. "
+            f"Assigning them maximum pseudotime.",
+            stacklevel=2,
+        )
+        pt[np.isnan(pt)] = np.nanmax(pt)
+
+    return pt
+
+
+def _compute_dpt(
+    adata: AnnData,
+    *,
+    root_cluster: Optional[str] = None,
+    root_cell: Optional[int] = None,
+    cluster_key: str = "clusters",
+) -> np.ndarray:
+    """
+    Compute Diffusion Pseudotime.
+
+    DPT builds a diffusion process on the KNN graph and measures
+    diffusion distance from a root cell. It uses only the expression
+    geometry — no velocity or spliced/unspliced information.
+    """
+    if root_cell is not None:
+        adata.uns["iroot"] = int(root_cell)
+
+    elif root_cluster is not None:
+        if cluster_key not in adata.obs:
+            raise ValueError(
+                f"cluster_key '{cluster_key}' not found in adata.obs. "
+                f"Available: {list(adata.obs.columns)}"
+            )
+        mask = adata.obs[cluster_key].astype(str) == str(root_cluster)
+        if not mask.any():
+            available = sorted(
+                adata.obs[cluster_key].astype(str).unique().tolist()
+            )
+            raise ValueError(
+                f"Root cluster '{root_cluster}' not found. "
+                f"Available: {available}"
+            )
+        adata.uns["iroot"] = int(np.where(mask)[0][0])
+
+    else:
+        raise ValueError(
+            "For pseudotime, provide one of: "
+            "key (precomputed), root_cluster, or root_cell."
+        )
+
+    sc.tl.diffmap(adata)
+    sc.tl.dpt(adata)
+
+    pt = adata.obs["dpt_pseudotime"].values.astype(np.float64)
+
+    # DPT can produce infinities for disconnected components
+    inf_mask = ~np.isfinite(pt)
+    if inf_mask.any():
+        warnings.warn(
+            f"DPT produced {inf_mask.sum()} non-finite values "
+            f"(disconnected cells). Assigning maximum pseudotime.",
+            stacklevel=2,
+        )
+        pt[inf_mask] = np.nanmax(pt[np.isfinite(pt)])
+
+    return pt
+
+
+def _normalize_01(pt: np.ndarray) -> np.ndarray:
+    """Normalize an array to [0, 1], handling edge cases."""
+    pt = pt.astype(np.float64)
+    pt_min = np.nanmin(pt)
+    pt_max = np.nanmax(pt)
+
+    if pt_max - pt_min < 1e-12:
+        warnings.warn(
+            "Pseudotime has near-zero range. Returning all zeros.",
+            stacklevel=2,
+        )
+        return np.zeros_like(pt)
+
+    return (pt - pt_min) / (pt_max - pt_min)
+
+=== file: tl.py ===
+"""
+velot.tl — Tools
+================
+
+Core analysis functions for the VelOT pipeline.
+
+Follows the scanpy/scvelo convention: functions modify adata in place
+and return it for optional chaining.
+
+Quick usage::
+
+    import velot
+    velot.tl.velocity(adata)   # runs the full pipeline
+
+Step-by-step usage::
+
+    velot.tl.build_windows(adata)
+    velot.tl.compute_ot_velocity(adata)
+    velot.tl.smooth_velocity(adata)
+    velot.tl.project_to_umap(adata)
+"""
+
+from __future__ import annotations
+
+import warnings
+from typing import Optional
+
+import numpy as np
+from anndata import AnnData
+from scipy.spatial import cKDTree
+from sklearn.cluster import KMeans
+
+try:
+    import ot as pot
+except ImportError:
+    raise ImportError(
+        "The POT (Python Optimal Transport) library is required. "
+        "Install it with: pip install POT"
+    )
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+# =====================================================================
+# 1. SPATIAL-TEMPORAL WINDOWING
+# =====================================================================
+
+
+def build_windows(
+    adata: AnnData,
+    basis: str = "X_pca",
+    n_clusters: Optional[int] = None,
+    window_size: Optional[int] = None,
+    overlap_fraction: float = 0.5,
+    min_window_size: int = 20,
+    spatial_key: Optional[str] = None,
+    random_state: int = 42,
+) -> AnnData:
+    """
+    Build spatial-temporal windows for local OT velocity computation.
+
+    Instead of sorting all cells by pseudotime and creating global
+    sequential windows (which fails when pseudotime does not correspond
+    to spatial locality), this function:
+
+      1. Clusters cells spatially in PCA space
+      2. Within each cluster, sorts cells by pseudotime
+      3. Creates overlapping temporal windows within each cluster
+      4. Pairs consecutive windows for OT computation
+
+    This ensures OT is only computed between spatially nearby cells,
+    even when cells of very different pseudotime coexist in the same
+    region of the embedding.
+
+    Parameters
+    ----------
+    adata
+        Must contain ``adata.obsm[basis]`` and ``adata.obs['pseudotime']``.
+    basis
+        Key in ``adata.obsm`` for the embedding to cluster in.
+    n_clusters
+        Number of spatial clusters. If None, chosen automatically
+        based on dataset size.
+    window_size
+        Number of cells per temporal window. If None, chosen
+        automatically.
+    overlap_fraction
+        Fraction of overlap between consecutive temporal windows
+        within each cluster. 0.5 means 50% overlap.
+    min_window_size
+        Minimum number of cells to form a valid window.
+        Clusters smaller than 2 * min_window_size are skipped.
+    spatial_key
+        Column in ``adata.obs`` with precomputed spatial cluster
+        labels. If provided, skips KMeans clustering.
+    random_state
+        Random seed for KMeans.
+
+    Returns
+    -------
+    adata, modified in place with:
+      - ``adata.obs['velot_spatial_cluster']`` : spatial cluster labels
+      - ``adata.uns['velot_windows']`` : dict with window pair info
+    """
+    _check_fields(adata, obsm_keys=[basis], obs_keys=["pseudotime"])
+
+    X = adata.obsm[basis]
+    pseudotime = adata.obs["pseudotime"].values
+    n_cells = adata.n_obs
+
+    # ------------------------------------------------------------------
+    # Step 1: Spatial clustering
+    # ------------------------------------------------------------------
+    if spatial_key is not None:
+        labels = adata.obs[spatial_key].values.astype(int)
+        n_clust = len(np.unique(labels))
+        print(f"  Using precomputed spatial labels from '{spatial_key}': "
+              f"{n_clust} clusters")
+    else:
+        if n_clusters is None:
+            n_clusters = max(5, min(30, n_cells // 100))
+
+        km = KMeans(
+            n_clusters=n_clusters, random_state=random_state, n_init=10,
+        ).fit(X)
+        labels = km.labels_
+        n_clust = n_clusters
+        print(f"  Spatial clustering: {n_clust} clusters via KMeans "
+              f"on {basis} ({X.shape[1]}D)")
+
+    adata.obs["velot_spatial_cluster"] = labels
+
+    # ------------------------------------------------------------------
+    # Step 2: Within each cluster, create temporal windows
+    # ------------------------------------------------------------------
+    if window_size is None:
+        # Aim for ~3-5 windows per cluster on average
+        mean_cluster_size = n_cells / n_clust
+        window_size = max(min_window_size, int(mean_cluster_size / 4))
+
+    step_size = max(1, int(window_size * (1.0 - overlap_fraction)))
+
+    window_pairs = []
+    skipped_clusters = 0
+
+    for c in range(n_clust):
+        cluster_mask = labels == c
+        cluster_indices = np.where(cluster_mask)[0]
+
+        if len(cluster_indices) < 2 * min_window_size:
+            skipped_clusters += 1
+            continue
+
+        # Sort by pseudotime within this cluster
+        pt_local = pseudotime[cluster_indices]
+        order = np.argsort(pt_local)
+        sorted_indices = cluster_indices[order]
+
+        # Adapt window size for small clusters
+        local_ws = min(window_size, len(sorted_indices) // 2)
+        local_ws = max(local_ws, min_window_size)
+        local_step = max(1, int(local_ws * (1.0 - overlap_fraction)))
+
+        # Create windows
+        windows = []
+        for start in range(0, len(sorted_indices) - local_ws + 1, local_step):
+            windows.append(sorted_indices[start : start + local_ws])
+
+        # Ensure the tail end is included
+        if (len(windows) > 0
+                and windows[-1][-1] != sorted_indices[-1]
+                and len(sorted_indices) >= local_ws):
+            windows.append(sorted_indices[-local_ws:])
+
+        # Pair consecutive windows
+        for w_src, w_tgt in zip(windows[:-1], windows[1:]):
+            window_pairs.append((w_src, w_tgt))
+
+    # ------------------------------------------------------------------
+    # Store results
+    # ------------------------------------------------------------------
+    adata.uns["velot_windows"] = {
+        "pairs": window_pairs,
+        "n_pairs": len(window_pairs),
+        "n_clusters": n_clust,
+        "window_size": window_size,
+        "overlap_fraction": overlap_fraction,
+    }
+
+    print(f"  Built {len(window_pairs)} window pairs across "
+          f"{n_clust - skipped_clusters} clusters "
+          f"(skipped {skipped_clusters} small clusters)")
+    print(f"  Window size: {window_size}, step: {step_size}")
+
+    return adata
+
+
+# =====================================================================
+# 2. OPTIMAL TRANSPORT VELOCITY
+# =====================================================================
+
+
+def _ot_velocity_pair(
+    X: np.ndarray,
+    idx_source: np.ndarray,
+    idx_target: np.ndarray,
+    pseudotime: np.ndarray,
+    knn_adj,
+    reg: float = 0.05,
+    lambda_time: float = 1.0,
+    lambda_knn: float = 1.0,
+) -> np.ndarray:
+    """
+    Compute OT-based velocity for one window pair.
+
+    Returns velocity vectors for cells in the source window.
+    Adapted from the original VelOT compute_ot_velocity.
+    """
+    X1 = X[idx_source]
+    X2 = X[idx_target]
+
+    n1 = X1.shape[0]
+    n2 = X2.shape[0]
+
+    # Uniform marginals
+    a = np.ones(n1, dtype=np.float64) / n1
+    b = np.ones(n2, dtype=np.float64) / n2
+
+    # Cost matrix: squared Euclidean distance, normalized
+    C = pot.dist(X1, X2, metric="sqeuclidean")
+    C_max = C.max()
+    if C_max > 0:
+        C = C / C_max
+
+    # Pseudotime penalty: penalize backward transport
+    t1 = pseudotime[idx_source]
+    t2 = pseudotime[idx_target]
+    time_diff = t1[:, None] - t2[None, :]
+    C[time_diff > 0] += lambda_time
+
+    # KNN locality penalty: penalize transport to non-neighbors
+    if knn_adj is not None:
+        local_adj = knn_adj[idx_source][:, idx_target]
+        if hasattr(local_adj, "toarray"):
+            local_adj = local_adj.toarray()
+        C[local_adj == 0] += lambda_knn
+
+    # Sinkhorn OT
+    try:
+        P = pot.sinkhorn(a, b, C, reg=reg, numItermax=500, stopThr=1e-6)
+    except Exception:
+        # Fallback to exact OT if Sinkhorn diverges
+        try:
+            P = pot.emd(a, b, C)
+        except Exception:
+            return np.zeros_like(X1)
+
+    # Check for numerical issues
+    if not np.isfinite(P).all() or P.sum() < 1e-10:
+        return np.zeros_like(X1)
+
+    # Velocity = weighted displacement
+    row_sums = P.sum(axis=1, keepdims=True)
+    row_sums[row_sums == 0] = 1.0
+    V = (P @ X2) / row_sums - X1
+
+    # Zero out velocity for cells with no KNN neighbors in target
+    if knn_adj is not None:
+        has_neighbors = local_adj.sum(axis=1) > 0
+        V[~has_neighbors] = 0.0
+
+    return V
+
+
+def compute_ot_velocity(
+    adata: AnnData,
+    basis: str = "X_pca",
+    reg: float = 0.05,
+    lambda_time: float = 1.0,
+    lambda_knn: float = 1.0,
+) -> AnnData:
+    """
+    Compute raw OT velocity from spatial-temporal windows.
+
+    For each window pair, Sinkhorn optimal transport is used to
+    match cells in the source window to cells in the target window.
+    The velocity for each cell is the weighted displacement under
+    the transport plan.
+
+    Results are aggregated across all window pairs where a cell
+    appears as a source. A per-cell confidence score tracks how
+    many windows contributed to each cell's velocity estimate.
+
+    Parameters
+    ----------
+    adata
+        Must contain windows from ``velot.tl.build_windows()``.
+    basis
+        Embedding key in ``adata.obsm``.
+    reg
+        Sinkhorn entropy regularization. Smaller = sharper plans.
+    lambda_time
+        Penalty added to cost for backward-in-time transport.
+    lambda_knn
+        Penalty added to cost for transport between non-neighbors.
+
+    Returns
+    -------
+    adata, modified in place with:
+      - ``adata.obsm['velot_velocity']`` : raw OT velocity (PCA space)
+      - ``adata.obs['velot_confidence']`` : contribution count per cell
+    """
+    _check_fields(adata, obsm_keys=[basis], uns_keys=["velot_windows"])
+
+    X = adata.obsm[basis]
+    pseudotime = adata.obs["pseudotime"].values
+    n_cells = adata.n_obs
+    dim = X.shape[1]
+
+    window_info = adata.uns["velot_windows"]
+    window_pairs = window_info["pairs"]
+
+    # Get KNN adjacency for locality penalty
+    knn_adj = None
+    if "connectivities" in adata.obsp:
+        knn_adj = adata.obsp["connectivities"]
+
+    # Accumulate velocity across all window pairs
+    V = np.zeros((n_cells, dim), dtype=np.float64)
+    counts = np.zeros(n_cells, dtype=np.float64)
+
+    for pair_i, (idx_src, idx_tgt) in enumerate(window_pairs):
+        v_local = _ot_velocity_pair(
+            X, idx_src, idx_tgt, pseudotime, knn_adj,
+            reg=reg, lambda_time=lambda_time, lambda_knn=lambda_knn,
+        )
+
+        for i, cell_idx in enumerate(idx_src):
+            V[cell_idx] += v_local[i]
+            counts[cell_idx] += 1
+
+    # Average velocity across contributing windows
+    mask = counts > 0
+    V[mask] /= counts[mask, None]
+
+    # Confidence: normalized contribution count
+    max_count = counts.max() if counts.max() > 0 else 1.0
+    confidence = counts / max_count
+
+    adata.obsm["velot_velocity"] = V
+    adata.obs["velot_confidence"] = confidence
+
+    n_with_velocity = mask.sum()
+    n_zero = (~mask).sum()
+    print(f"  OT velocity computed: {n_with_velocity} cells with velocity, "
+          f"{n_zero} cells without (will be filled by smoothing)")
+
+    return adata
+
+
+# =====================================================================
+# 3. NEURAL VELOCITY FIELD SMOOTHING
+# =====================================================================
+
+
+def _build_knn_index(X: np.ndarray, k: int = 15) -> np.ndarray:
+    """
+    Build a fixed-k nearest neighbor index using cKDTree.
+
+    Returns
+    -------
+    knn_indices : ndarray of shape (n_cells, k)
+        For each cell, the indices of its k nearest neighbors.
+    """
+    tree = cKDTree(X)
+    _, indices = tree.query(X, k=k + 1)  # +1 because self is included
+    return indices[:, 1:]  # exclude self
+
+
+class _VelocityNet(nn.Module):
+    """Small MLP that predicts velocity from PCA coordinates."""
+
+    def __init__(self, dim: int, hidden: int = 128, use_pseudotime: bool = True):
+        super().__init__()
+        self.use_pseudotime = use_pseudotime
+        in_dim = dim + (1 if use_pseudotime else 0)
+
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, dim),
+        )
+
+    def forward(self, x: torch.Tensor, pt: torch.Tensor = None) -> torch.Tensor:
+        if self.use_pseudotime and pt is not None:
+            x = torch.cat([x, pt], dim=-1)
+        return self.net(x)
+
+    def forward_with_jacobian(self, x: torch.Tensor, pt: torch.Tensor = None):
+        """
+        Forward pass that also computes the Jacobian dv/dx.
+        Used for curl and divergence regularization.
+        """
+        x_in = x.detach().clone().requires_grad_(True)
+        if self.use_pseudotime and pt is not None:
+            inp = torch.cat([x_in, pt], dim=-1)
+        else:
+            inp = x_in
+        v = self.net(inp)
+        return v, x_in
+
+
+def smooth_velocity(
+    adata: AnnData,
+    basis: str = "X_pca",
+    n_epochs: int = 200,
+    hidden_dim: int = 128,
+    lr: float = 1e-3,
+    batch_size: int = 256,
+    lambda_smooth: float = 0.5,
+    lambda_curl: float = 0.0,
+    lambda_divergence: float = 0.0,
+    k_smooth: int = 15,
+    use_pseudotime: bool = True,
+    random_state: int = 42,
+    verbose: bool = True,
+) -> AnnData:
+    """
+    Smooth the raw OT velocity field using a neural network.
+
+    Three types of regularization are available:
+
+    - **Smoothness** (``lambda_smooth``): neighboring cells should
+      have similar velocities. Reduces noise and zig-zagging.
+
+    - **Curl penalty** (``lambda_curl``): penalizes rotational
+      components of the velocity field. Encourages irrotational
+      flow where streamlines do not form loops. This is the
+      strongest constraint for preventing crossing field lines.
+
+    - **Divergence penalty** (``lambda_divergence``): penalizes
+      the divergence of the velocity field. Encourages
+      incompressible-like flow where cells neither accumulate
+      nor deplete locally.
+
+    Parameters
+    ----------
+    adata
+        Must contain ``adata.obsm['velot_velocity']``.
+    basis
+        Embedding key for cell coordinates.
+    n_epochs
+        Training epochs.
+    hidden_dim
+        Network hidden layer width.
+    lr
+        Learning rate.
+    batch_size
+        Cells per batch.
+    lambda_smooth
+        Weight of KNN smoothness loss.
+    lambda_curl
+        Weight of curl penalty. Higher values produce flow
+        with fewer crossing streamlines. Recommended range:
+        0.0 (off) to 0.5.
+    lambda_divergence
+        Weight of divergence penalty. Higher values produce
+        more volume-preserving flow. Recommended range:
+        0.0 (off) to 0.5.
+    k_smooth
+        Number of neighbors for smoothness.
+    use_pseudotime
+        Condition network on pseudotime.
+    random_state
+        Random seed.
+    verbose
+        Print progress.
+
+    Returns
+    -------
+    adata with smoothed velocity.
+    """
+    _check_fields(
+        adata, obsm_keys=[basis, "velot_velocity"],
+        obs_keys=["velot_confidence"],
+    )
+
+    torch.manual_seed(random_state)
+    np.random.seed(random_state)
+
+    X_np = adata.obsm[basis].astype(np.float32)
+    V_np = adata.obsm["velot_velocity"].astype(np.float32)
+    conf_np = adata.obs["velot_confidence"].values.astype(np.float32)
+    pt_np = adata.obs["pseudotime"].values.astype(np.float32)
+
+    n_cells, dim = X_np.shape
+
+    adata.obsm["velot_velocity_raw"] = V_np.copy()
+
+    knn_indices = _build_knn_index(X_np, k=k_smooth)
+
+    X_t = torch.tensor(X_np, device=DEVICE)
+    V_t = torch.tensor(V_np, device=DEVICE)
+    conf_t = torch.tensor(conf_np, device=DEVICE)
+    pt_t = torch.tensor(pt_np, device=DEVICE).unsqueeze(-1)
+    knn_t = torch.tensor(knn_indices, dtype=torch.long, device=DEVICE)
+
+    net = _VelocityNet(
+        dim=dim, hidden=hidden_dim, use_pseudotime=use_pseudotime,
+    ).to(DEVICE)
+
+    optimizer = optim.Adam(net.parameters(), lr=lr)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_epochs)
+
+    use_jacobian = (lambda_curl > 0) or (lambda_divergence > 0)
+
+    net.train()
+    losses_reg = []
+    losses_smooth = []
+    losses_curl = []
+    losses_div = []
+    losses_total = []
+
+    for epoch in range(n_epochs):
+        idx = torch.randint(0, n_cells, (min(batch_size, n_cells),), device=DEVICE)
+
+        B = idx.shape[0]
+        k = knn_indices.shape[1]
+
+        # --- Regression and smoothness (same as before) ---
+        nbr_idx = knn_t[idx]
+        all_idx = torch.cat([idx, nbr_idx.reshape(-1)])
+
+        X_all = X_t[all_idx]
+        pt_all = pt_t[all_idx] if use_pseudotime else None
+
+        V_all = net(X_all, pt_all)
+
+        V_batch = V_all[:B]
+        V_nbr = V_all[B:].reshape(B, k, dim)
+
+        V_target = V_t[idx]
+        conf_batch = conf_t[idx]
+
+        sq_err = ((V_batch - V_target) ** 2).sum(dim=-1)
+        loss_reg = (conf_batch * sq_err).sum() / (conf_batch.sum() + 1e-8)
+
+        diff = V_batch.unsqueeze(1) - V_nbr
+        loss_smooth = (diff ** 2).mean()
+
+        loss = loss_reg + lambda_smooth * loss_smooth
+
+        # --- Curl and divergence penalties ---
+        loss_curl_val = torch.tensor(0.0, device=DEVICE)
+        loss_div_val = torch.tensor(0.0, device=DEVICE)
+
+        if use_jacobian:
+            # Compute Jacobian dv/dx for the batch
+            x_jac = X_t[idx].detach().clone().requires_grad_(True)
+            pt_jac = pt_t[idx] if use_pseudotime else None
+
+            if use_pseudotime and pt_jac is not None:
+                inp_jac = torch.cat([x_jac, pt_jac], dim=-1)
+            else:
+                inp_jac = x_jac
+
+            v_jac = net.net(inp_jac)
+
+            # Compute partial derivatives dv_d / dx_d' for each output dim
+            # We only need the spatial Jacobian (not pseudotime derivatives)
+            jac_rows = []
+            for d in range(min(dim, 3)):
+                grad_d = torch.autograd.grad(
+                    v_jac[:, d].sum(), x_jac,
+                    create_graph=True, retain_graph=True,
+                )[0]
+                jac_rows.append(grad_d)
+
+            if len(jac_rows) >= 2:
+                # Divergence: trace of Jacobian = Σ dv_d/dx_d
+                if lambda_divergence > 0:
+                    divergence = sum(
+                        jac_rows[d][:, d] for d in range(min(dim, len(jac_rows)))
+                    )
+                    loss_div_val = (divergence ** 2).mean()
+                    loss = loss + lambda_divergence * loss_div_val
+
+                # Curl: off-diagonal antisymmetric part
+                # In 2D: curl = dv_y/dx - dv_x/dy
+                # In higher D: sum of all 2D curl components
+                if lambda_curl > 0:
+                    curl_components = []
+                    n_curl_dims = min(dim, len(jac_rows))
+                    for d1 in range(n_curl_dims):
+                        for d2 in range(d1 + 1, n_curl_dims):
+                            # dv_{d2}/dx_{d1} - dv_{d1}/dx_{d2}
+                            curl_d1d2 = jac_rows[d2][:, d1] - jac_rows[d1][:, d2]
+                            curl_components.append(curl_d1d2)
+
+                    if curl_components:
+                        curl_stack = torch.stack(curl_components, dim=-1)
+                        loss_curl_val = (curl_stack ** 2).mean()
+                        loss = loss + lambda_curl * loss_curl_val
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        scheduler.step()
+
+        losses_reg.append(loss_reg.item())
+        losses_smooth.append(loss_smooth.item())
+        losses_curl.append(loss_curl_val.item())
+        losses_div.append(loss_div_val.item())
+        losses_total.append(loss.item())
+
+        if verbose and (epoch + 1) % 50 == 0:
+            msg = (f"    epoch {epoch+1}/{n_epochs}: "
+                   f"total={loss.item():.4f} "
+                   f"reg={loss_reg.item():.4f} "
+                   f"smooth={loss_smooth.item():.4f}")
+            if lambda_curl > 0:
+                msg += f" curl={loss_curl_val.item():.4f}"
+            if lambda_divergence > 0:
+                msg += f" div={loss_div_val.item():.4f}"
+            print(msg)
+
+    # Extract smoothed velocity
+    net.eval()
+    with torch.no_grad():
+        chunk_size = 2048
+        V_smooth = []
+        for start in range(0, n_cells, chunk_size):
+            end = min(start + chunk_size, n_cells)
+            X_chunk = X_t[start:end]
+            pt_chunk = pt_t[start:end] if use_pseudotime else None
+            V_smooth.append(net(X_chunk, pt_chunk).cpu().numpy())
+        V_smooth = np.concatenate(V_smooth, axis=0)
+
+    adata.obsm["velot_velocity"] = V_smooth
+
+    adata.uns["velot_smoothing"] = {
+        "n_epochs": n_epochs,
+        "losses_regression": losses_reg,
+        "losses_smoothness": losses_smooth,
+        "losses_curl": losses_curl,
+        "losses_divergence": losses_div,
+        "losses_total": losses_total,
+        "lambda_smooth": lambda_smooth,
+        "lambda_curl": lambda_curl,
+        "lambda_divergence": lambda_divergence,
+        "network": net,
+        "device": str(DEVICE),
+        "dim": dim,
+        "use_pseudotime": use_pseudotime,
+    }
+
+    if verbose:
+        print(f"  Smoothing complete: final total={losses_total[-1]:.4f}")
+
+    return adata
+
+
+def query_velocity(
+    adata: AnnData,
+    positions: np.ndarray,
+    pseudotime_values: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """
+    Query the learned continuous velocity field at arbitrary positions.
+
+    Unlike the stored velocity vectors in ``adata.obsm['velot_velocity']``
+    which are only defined at cell locations, this function evaluates
+    the trained neural velocity field at any point in PCA space.
+
+    This is what makes VelOT a true velocity FIELD rather than just
+    a set of velocity vectors: given any point on the manifold, you
+    can ask "what is the velocity here?"
+
+    Parameters
+    ----------
+    positions
+        Array of shape (n_points, D) with PCA coordinates to query.
+    pseudotime_values
+        Array of shape (n_points,) with pseudotime values for each
+        query point. If None, uses the median pseudotime from the
+        dataset.
+
+    Returns
+    -------
+    Array of shape (n_points, D) with velocity vectors at each
+    query position.
+
+    Example
+    -------
+    ::
+
+        # Query at cell positions (same as stored vectors)
+        V = velot.tl.query_velocity(adata, adata.obsm["X_pca"])
+
+        # Query at arbitrary positions
+        import numpy as np
+        grid_points = np.random.randn(100, 30) * 0.1
+        V_grid = velot.tl.query_velocity(adata, grid_points)
+    """
+    if "velot_smoothing" not in adata.uns:
+        raise ValueError(
+            "No smoothing network found. Run velot.tl.smooth_velocity() first."
+        )
+
+    info = adata.uns["velot_smoothing"]
+    net = info["network"]
+    use_pt = info["use_pseudotime"]
+
+    positions = np.asarray(positions, dtype=np.float32)
+    n_points = positions.shape[0]
+
+    if pseudotime_values is None:
+        median_pt = float(np.median(adata.obs["pseudotime"].values))
+        pseudotime_values = np.full(n_points, median_pt, dtype=np.float32)
+    else:
+        pseudotime_values = np.asarray(pseudotime_values, dtype=np.float32)
+
+    X_t = torch.tensor(positions, device=DEVICE)
+    pt_t = torch.tensor(pseudotime_values, device=DEVICE).unsqueeze(-1)
+
+    net.eval()
+    with torch.no_grad():
+        chunk_size = 2048
+        V_parts = []
+        for start in range(0, n_points, chunk_size):
+            end = min(start + chunk_size, n_points)
+            X_chunk = X_t[start:end]
+            pt_chunk = pt_t[start:end] if use_pt else None
+            V_parts.append(net(X_chunk, pt_chunk).cpu().numpy())
+
+    return np.concatenate(V_parts, axis=0)
+
+
+# =====================================================================
+# 4. PROJECTION TO UMAP
+# =====================================================================
+
+
+def project_to_umap(
+    adata: AnnData,
+    velocity_key: str = "velot_velocity",
+    basis_pca: str = "X_pca",
+    basis_umap: str = "X_umap",
+    n_neighbors: int = 30,
+) -> AnnData:
+    """
+    Project velocity from PCA space to UMAP space for visualization.
+
+    Uses a local linear approximation: for each cell, the Jacobian
+    of the PCA→UMAP mapping is estimated from its KNN neighborhood
+    via least-squares, and the PCA velocity is transformed accordingly.
+
+    Note: UMAP is for visualization only. The velocity in PCA space
+    (``adata.obsm['velot_velocity']``) is the primary output.
+
+    Parameters
+    ----------
+    adata
+        Must contain PCA and UMAP embeddings, and computed velocity.
+
+    Returns
+    -------
+    adata with ``adata.obsm['velocity_umap']`` populated.
+    """
+    _check_fields(
+        adata,
+        obsm_keys=[velocity_key, basis_pca, basis_umap],
+    )
+
+    X_pca = adata.obsm[basis_pca]
+    X_umap = adata.obsm[basis_umap]
+    V_pca = adata.obsm[velocity_key]
+
+    n_cells = X_pca.shape[0]
+
+    # Build KNN in PCA space for the local linear approximation
+    knn_indices = _build_knn_index(X_pca, k=n_neighbors)
+
+    V_umap = np.zeros_like(X_umap)
+
+    for i in range(n_cells):
+        nbrs = knn_indices[i]
+
+        # Local displacement in PCA and UMAP
+        dX = X_pca[nbrs] - X_pca[i]       # (k, d_pca)
+        dU = X_umap[nbrs] - X_umap[i]     # (k, 2)
+
+        # Least-squares: dU ≈ dX @ A  →  A = (dX^T dX)^{-1} dX^T dU
+        A, _, _, _ = np.linalg.lstsq(dX, dU, rcond=None)
+
+        # Project PCA velocity through the local Jacobian
+        V_umap[i] = V_pca[i] @ A
+
+    adata.obsm["velocity_umap"] = V_umap
+
+    print(f"  Velocity projected to UMAP ({n_cells} cells)")
+
+    return adata
+
+
+# =====================================================================
+# 5. ORCHESTRATOR
+# =====================================================================
+
+
+def velocity(
+    adata: AnnData,
+    basis: str = "X_pca",
+    smooth: bool = True,
+    # Windowing params
+    n_clusters: Optional[int] = None,
+    window_size: Optional[int] = None,
+    overlap_fraction: float = 0.5,
+    min_window_size: int = 20,
+    spatial_key: Optional[str] = None,
+    # OT params
+    reg: float = 0.05,
+    lambda_time: float = 1.0,
+    lambda_knn: float = 1.0,
+    # Smoothing params
+    n_epochs: int = 200,
+    hidden_dim: int = 128,
+    lambda_smooth: float = 0.5,
+    lambda_curl: float = 0.0,
+    lambda_divergence: float = 0.0,
+    k_smooth: int = 15,
+    use_pseudotime: bool = True,
+    # Output
+    project_umap: bool = True,
+    random_state: int = 42,
+    verbose: bool = True,
+) -> AnnData:
+    """
+    Run the full VelOT velocity pipeline.
+
+    This is a convenience function that calls, in order:
+      1. ``build_windows()`` — spatial-temporal windowing
+      2. ``compute_ot_velocity()`` — local OT velocity
+      3. ``smooth_velocity()`` — neural smoothing (optional)
+      4. ``project_to_umap()`` — PCA → UMAP projection (optional)
+
+    Parameters
+    ----------
+    adata
+        Preprocessed AnnData (run ``velot.pp.prepare()`` first).
+    basis
+        Embedding key for velocity computation.
+    smooth
+        Whether to apply neural smoothing.
+    project_umap
+        Whether to project velocity to UMAP for visualization.
+    verbose
+        Whether to print progress.
+
+    Returns
+    -------
+    adata with velocity fields computed.
+
+    Example
+    -------
+    ::
+
+        import velot
+        import scvelo as scv
+
+        adata = scv.datasets.pancreas()
+        velot.pp.prepare(adata, root_cluster="Ductal")
+        velot.tl.velocity(adata)
+        velot.pl.velocity_stream(adata)
+    """
+    _check_fields(adata, obsm_keys=[basis], obs_keys=["pseudotime"])
+
+    if verbose:
+        print("VelOT: Computing velocity field")
+        print(f"  Basis: {basis} ({adata.obsm[basis].shape[1]}D)")
+        print(f"  Cells: {adata.n_obs}")
+        print(f"  Smoothing: {'ON' if smooth else 'OFF'}")
+        print()
+
+    # Step 1: Windowing
+    if verbose:
+        print("[1/4] Building spatial-temporal windows...")
+    build_windows(
+        adata,
+        basis=basis,
+        n_clusters=n_clusters,
+        window_size=window_size,
+        overlap_fraction=overlap_fraction,
+        min_window_size=min_window_size,
+        spatial_key=spatial_key,
+        random_state=random_state,
+    )
+
+    # Step 2: OT velocity
+    if verbose:
+        print("\n[2/4] Computing OT velocity...")
+    compute_ot_velocity(
+        adata,
+        basis=basis,
+        reg=reg,
+        lambda_time=lambda_time,
+        lambda_knn=lambda_knn,
+    )
+
+    # Step 3: Smoothing
+    if smooth:
+        if verbose:
+            print("\n[3/4] Smoothing velocity field...")
+        smooth_velocity(
+            adata,
+            basis=basis,
+            n_epochs=n_epochs,
+            hidden_dim=hidden_dim,
+            lambda_smooth=lambda_smooth,
+            lambda_curl=lambda_curl,
+            lambda_divergence=lambda_divergence,
+            k_smooth=k_smooth,
+            use_pseudotime=use_pseudotime,
+            random_state=random_state,
+            verbose=verbose,
+        )
+    else:
+        if verbose:
+            print("\n[3/4] Smoothing: SKIPPED")
+
+    # Step 4: Project to UMAP
+    if project_umap and "X_umap" in adata.obsm:
+        if verbose:
+            print("\n[4/4] Projecting to UMAP...")
+        project_to_umap(adata)
+    else:
+        if verbose:
+            print("\n[4/4] UMAP projection: SKIPPED")
+
+    if verbose:
+        print("\nVelOT: Done.")
+
+    return adata
+
+
+# =====================================================================
+# INTERNAL HELPERS
+# =====================================================================
+
+
+def _check_fields(
+    adata: AnnData,
+    obsm_keys: list = None,
+    obs_keys: list = None,
+    uns_keys: list = None,
+):
+    """Validate that required fields exist in adata."""
+    obsm_keys = obsm_keys or []
+    obs_keys = obs_keys or []
+    uns_keys = uns_keys or []
+
+    for key in obsm_keys:
+        if key not in adata.obsm:
+            raise ValueError(
+                f"'{key}' not found in adata.obsm. "
+                f"Run velot.pp.prepare() first. "
+                f"Available keys: {list(adata.obsm.keys())}"
+            )
+    for key in obs_keys:
+        if key not in adata.obs:
+            raise ValueError(
+                f"'{key}' not found in adata.obs. "
+                f"Run velot.pp.prepare() first. "
+                f"Available columns: {list(adata.obs.columns)}"
+            )
+    for key in uns_keys:
+        if key not in adata.uns:
+            raise ValueError(
+                f"'{key}' not found in adata.uns. "
+                f"Run the required upstream step first."
+            )
+
+
+# =====================================================================
+# 6. GRID SEARCH
+# =====================================================================
+
+
+def gridsearch(
+    adata: AnnData,
+    param_grid: dict,
+    cluster_edges: Optional[list] = None,
+    cluster_key: str = "clusters",
+    velocity_metric_key: str = "velocity_umap",
+    fixed_params: Optional[dict] = None,
+    pseudotime_key: str = "pseudotime",
+    verbose: bool = True,
+):
+    """
+    Run the VelOT pipeline across multiple parameter combinations
+    and collect evaluation metrics for each.
+
+    Parameters
+    ----------
+    adata
+        Preprocessed AnnData. Must already have PCA, neighbors,
+        UMAP, and pseudotime computed (everything from ``velot.pp``).
+        A fresh copy is used for each parameter combination.
+    param_grid
+        Dictionary mapping parameter names to lists of values.
+        Parameter names must match arguments of ``velot.tl.velocity()``.
+        Example::
+
+            param_grid = {
+                "basis": ["X_pca"],
+                "reg": [0.01, 0.05, 0.1],
+                "lambda_smooth": [0.1, 0.5, 1.0],
+                "n_clusters": [10, 20],
+            }
+
+    cluster_edges
+        Transition edges for CBDir metric. If None, only ICCoh
+        is computed.
+    cluster_key
+        Column in adata.obs with cluster labels.
+    velocity_metric_key
+        Key in adata.obsm to evaluate metrics on.
+    fixed_params
+        Parameters passed to ``velot.tl.velocity()`` for every run
+        that are NOT part of the grid. Example::
+
+            fixed_params = {"smooth": True, "n_epochs": 200}
+
+    pseudotime_key
+        Column in adata.obs with pseudotime. Used to verify it
+        exists before running.
+    verbose
+        Whether to print progress.
+
+    Returns
+    -------
+    pandas DataFrame with one row per parameter combination and
+    columns for each parameter, ICCoh mean, CBDir mean, and
+    per-cluster/per-edge scores.
+
+    Example
+    -------
+    ::
+
+        import velot
+
+        adata = velot.datasets.dentategyrus()
+        # ... preprocessing ...
+
+        param_grid = {
+            "reg": [0.01, 0.05, 0.1, 0.5],
+            "lambda_smooth": [0.1, 0.5, 1.0],
+            "n_clusters": [10, 20, 30],
+        }
+
+        edges = [
+            ("OPC", "OL"),
+            ("Neuroblast", "Granule immature"),
+        ]
+
+        results = velot.tl.gridsearch(
+            adata,
+            param_grid,
+            cluster_edges=edges,
+            cluster_key="clusters",
+            fixed_params={"basis": "X_pca", "n_epochs": 200},
+        )
+
+        # Best by ICCoh
+        print(results.sort_values("iccoh_mean", ascending=False).head())
+
+        # Best by CBDir
+        print(results.sort_values("cbdir_mean", ascending=False).head())
+    """
+    import pandas as pd
+    from itertools import product
+    import time as _time
+
+    # Validate
+    if pseudotime_key not in adata.obs:
+        raise ValueError(
+            f"'{pseudotime_key}' not found in adata.obs. "
+            f"Run velot.pp.pseudotime() first."
+        )
+
+    fixed_params = fixed_params or {}
+
+    # Build all combinations
+    param_names = sorted(param_grid.keys())
+    param_values = [param_grid[k] for k in param_names]
+    combinations = list(product(*param_values))
+    n_combos = len(combinations)
+
+    if verbose:
+        print(f"VelOT Grid Search: {n_combos} combinations")
+        print(f"  Parameters: {param_names}")
+        print(f"  Fixed: {fixed_params}")
+        print()
+
+    # Run each combination
+    rows = []
+
+    try:
+        from tqdm.auto import tqdm
+        iterator = tqdm(
+            enumerate(combinations),
+            total=n_combos,
+            desc="VelOT Grid Search",
+            disable=not verbose,
+        )
+    except ImportError:
+        iterator = enumerate(combinations)
+        if verbose:
+            warnings.warn(
+                "Install tqdm for progress bars: pip install tqdm",
+                stacklevel=2,
+            )
+
+    for combo_i, combo in iterator:
+        params = dict(zip(param_names, combo))
+        run_params = {**fixed_params, **params}
+
+        # Update progress bar description
+        if hasattr(iterator, "set_postfix"):
+            short_params = {k: v for k, v in params.items()}
+            iterator.set_postfix(short_params, refresh=True)
+
+        # Work on a fresh copy each time
+        ad = adata.copy()
+
+        t0 = _time.time()
+        try:
+            velocity(
+                ad,
+                verbose=False,
+                **run_params,
+            )
+            elapsed = _time.time() - t0
+
+            # Compute metrics
+            from . import metrics as _metrics
+
+            iccoh_scores, iccoh_mean = _metrics.inner_cluster_coherence(
+                ad,
+                cluster_key=cluster_key,
+                velocity_key=velocity_metric_key,
+            )
+
+            row = {**params}
+            row["iccoh_mean"] = iccoh_mean
+            for cat, score in iccoh_scores.items():
+                row[f"iccoh_{cat}"] = score
+
+            if cluster_edges is not None:
+                cbdir_scores, cbdir_mean = _metrics.cross_boundary_correctness(
+                    ad,
+                    cluster_edges,
+                    cluster_key=cluster_key,
+                    velocity_key=velocity_metric_key,
+                )
+                row["cbdir_mean"] = cbdir_mean
+                for (u, v), score in cbdir_scores.items():
+                    row[f"cbdir_{u}_to_{v}"] = score
+            else:
+                row["cbdir_mean"] = float("nan")
+
+            row["elapsed_seconds"] = elapsed
+            row["status"] = "ok"
+
+            # Update progress bar with latest metrics
+            if hasattr(iterator, "set_postfix"):
+                post = {**short_params}
+                post["ICCoh"] = f"{iccoh_mean:.3f}"
+                if not np.isnan(row.get("cbdir_mean", float("nan"))):
+                    post["CBDir"] = f"{row['cbdir_mean']:.3f}"
+                iterator.set_postfix(post, refresh=True)
+
+        except Exception as e:
+            row = {**params}
+            row["iccoh_mean"] = float("nan")
+            row["cbdir_mean"] = float("nan")
+            row["elapsed_seconds"] = _time.time() - t0
+            row["status"] = f"error: {str(e)[:80]}"
+
+            if hasattr(iterator, "set_postfix"):
+                iterator.set_postfix({"status": "FAILED"}, refresh=True)
+
+        rows.append(row)
+
+        if verbose and row["status"] == "ok":
+            msg = f"    ICCoh={row['iccoh_mean']:.3f}"
+            if "cbdir_mean" in row and not np.isnan(row.get("cbdir_mean", float("nan"))):
+                msg += f"  CBDir={row['cbdir_mean']:.3f}"
+            msg += f"  ({elapsed:.1f}s)"
+            print(msg)
+
+    # Build DataFrame
+    df = pd.DataFrame(rows)
+
+    # Reorder columns: params first, then summary metrics, then details
+    param_cols = param_names
+    summary_cols = ["iccoh_mean", "cbdir_mean", "elapsed_seconds", "status"]
+    detail_cols = [c for c in df.columns if c not in param_cols + summary_cols]
+    col_order = param_cols + summary_cols + sorted(detail_cols)
+    df = df[[c for c in col_order if c in df.columns]]
+
+    if verbose:
+        print()
+        print("=" * 60)
+        print("Grid Search Complete")
+        print("=" * 60)
+
+        best_iccoh = df.loc[df["iccoh_mean"].idxmax()]
+        print(f"\nBest ICCoh ({best_iccoh['iccoh_mean']:.3f}):")
+        for p in param_names:
+            print(f"  {p}: {best_iccoh[p]}")
+
+        if cluster_edges is not None:
+            best_cbdir = df.loc[df["cbdir_mean"].idxmax()]
+            print(f"\nBest CBDir ({best_cbdir['cbdir_mean']:.3f}):")
+            for p in param_names:
+                print(f"  {p}: {best_cbdir[p]}")
+
+    return df
+
+# =====================================================================
+# 7. CELL TRAJECTORY TRACING
+# =====================================================================
+
+def compute_trajectories(
+    adata: AnnData,
+    start_cells: Optional[np.ndarray] = None,
+    start_cluster: Optional[str] = None,
+    target_cluster: Optional[str] = None,
+    n_trajectories: int = 20,
+    n_steps: int = 200,
+    step_size: float = 0.05,
+    direction: str = "forward",
+    velocity_key: str = "velot_velocity",
+    basis: str = "X_pca",
+    cluster_key: str = "clusters",
+    k_velocity: int = 15,
+    use_network: bool = True,
+    evolve_pseudotime: bool = True,
+    max_attempts_factor: int = 10,
+    random_state: int = 42,
+) -> AnnData:
+    """
+    Compute cell trajectories by integrating the velocity field.
+
+    Supports three modes:
+      - ``"forward"``: follow the flow from starting cells.
+      - ``"backward"``: go against the flow to trace origins.
+      - ``"both"``: compute both directions.
+
+    When ``target_cluster`` is specified, only trajectories that
+    reach the target are kept. The function will attempt up to
+    ``n_trajectories * max_attempts_factor`` integrations to find
+    enough successful trajectories.
+
+    Parameters
+    ----------
+    adata
+        Must have velocity computed.
+    start_cells
+        Array of cell indices to start from.
+    start_cluster
+        Cluster name to select starting cells from.
+    target_cluster
+        If provided, only keep trajectories whose terminal cluster
+        (forward) or origin cluster (backward) matches this value.
+        This is useful for finding specific lineage connections.
+    n_trajectories
+        Number of successful trajectories to collect.
+    n_steps
+        Maximum integration steps.
+    step_size
+        Euler step size as fraction of mean velocity magnitude.
+    direction
+        ``"forward"``, ``"backward"``, or ``"both"``.
+    velocity_key
+        Key in adata.obsm with velocity vectors.
+    basis
+        Embedding key for cell coordinates.
+    cluster_key
+        Cluster annotation column.
+    k_velocity
+        KNN for velocity interpolation (fallback mode).
+    use_network
+        If True and the smoothing network is available, query
+        the continuous velocity field directly.
+    evolve_pseudotime
+        If True, pseudotime evolves along the trajectory.
+    max_attempts_factor
+        When ``target_cluster`` is set, try up to
+        ``n_trajectories * max_attempts_factor`` starting cells
+        to find enough trajectories that reach the target.
+    random_state
+        Random seed.
+
+    Returns
+    -------
+    adata with ``adata.uns['velot_trajectories']``.
+
+    The stored metadata for each trajectory includes an ``"id"``
+    field that can be used with ``velot.pl.trajectories(trajectory_ids=...)``
+    to plot specific trajectories.
+
+    Examples
+    --------
+    All backward trajectories from Alpha::
+
+        velot.tl.compute_trajectories(
+            adata, start_cluster="Alpha", direction="backward",
+        )
+
+    Only backward trajectories from Alpha that reach Ngn3 low EP::
+
+        velot.tl.compute_trajectories(
+            adata, start_cluster="Alpha", direction="backward",
+            target_cluster="Ngn3 low EP", n_trajectories=5,
+        )
+
+    Forward from progenitors that reach Epsilon::
+
+        velot.tl.compute_trajectories(
+            adata, start_cluster="Ngn3 low EP", direction="forward",
+            target_cluster="Epsilon", n_trajectories=10,
+        )
+    """
+    _check_fields(adata, obsm_keys=[basis, velocity_key])
+
+    if direction not in ("forward", "backward", "both"):
+        raise ValueError(
+            f"direction must be 'forward', 'backward', or 'both', "
+            f"got '{direction}'."
+        )
+
+    X = adata.obsm[basis]
+    V = adata.obsm[velocity_key]
+    pseudotime = adata.obs["pseudotime"].values
+    n_cells, dim = X.shape
+
+    tree = cKDTree(X)
+
+    # Check if continuous field is available
+    has_network = (
+        use_network
+        and "velot_smoothing" in adata.uns
+        and "network" in adata.uns["velot_smoothing"]
+    )
+
+    if has_network:
+        net = adata.uns["velot_smoothing"]["network"]
+        use_pt = adata.uns["velot_smoothing"]["use_pseudotime"]
+        net.eval()
+
+    # All candidate starting cells
+    if start_cells is not None:
+        all_candidates = np.asarray(start_cells)
+    elif start_cluster is not None:
+        if cluster_key not in adata.obs:
+            raise ValueError(f"'{cluster_key}' not found in adata.obs.")
+        cluster_mask = adata.obs[cluster_key].astype(str) == str(start_cluster)
+        all_candidates = np.where(cluster_mask)[0]
+        if len(all_candidates) == 0:
+            available = sorted(adata.obs[cluster_key].astype(str).unique().tolist())
+            raise ValueError(
+                f"Cluster '{start_cluster}' not found. Available: {available}"
+            )
+    else:
+        raise ValueError("Provide either start_cells or start_cluster.")
+
+    rng = np.random.RandomState(random_state)
+
+    # Step size calibration
+    vel_magnitudes = np.linalg.norm(V, axis=1)
+    mean_vel_mag = np.mean(vel_magnitudes[vel_magnitudes > 1e-10])
+    if mean_vel_mag < 1e-10:
+        mean_vel_mag = 1.0
+    dt = step_size / mean_vel_mag
+
+    # Manifold boundary detection
+    sample_dists = tree.query(X[:min(200, n_cells)], k=2)[0][:, 1]
+    mean_nn_dist = np.mean(sample_dists)
+
+    # UMAP availability
+    has_umap = "X_umap" in adata.obsm
+    if has_umap:
+        X_umap = adata.obsm["X_umap"]
+
+    def _velocity_at(pos, pt_value):
+        if has_network:
+            pos_t = torch.tensor(
+                pos.reshape(1, -1).astype(np.float32), device=DEVICE
+            )
+            pt_t = torch.tensor(
+                [[pt_value]], dtype=torch.float32, device=DEVICE
+            )
+            with torch.no_grad():
+                v = net(pos_t, pt_t if use_pt else None)
+            return v.cpu().numpy().flatten()
+        else:
+            dists, indices = tree.query(pos, k=k_velocity)
+            weights = 1.0 / (dists + 1e-10)
+            weights = weights / weights.sum()
+            return np.sum(V[indices] * weights[:, None], axis=0)
+
+    def _estimate_pseudotime_at(pos):
+        dists, indices = tree.query(pos, k=min(10, n_cells - 1))
+        weights = 1.0 / (dists + 1e-10)
+        weights = weights / weights.sum()
+        return float(np.sum(pseudotime[indices] * weights))
+
+    def _project_to_umap(pos):
+        dists, indices = tree.query(pos, k=min(15, n_cells - 1))
+        dX = X[indices] - pos
+        dU = X_umap[indices] - X_umap[indices[0]]
+        try:
+            A, _, _, _ = np.linalg.lstsq(dX, dU, rcond=None)
+            return X_umap[indices[0]] + (pos - X[indices[0]]) @ A
+        except np.linalg.LinAlgError:
+            return X_umap[indices[0]]
+
+    def _nearest_cluster(pos):
+        _, idx = tree.query(pos, k=1)
+        return str(adata.obs[cluster_key].iloc[idx])
+
+    def _integrate(cell_idx, sign=1.0):
+        path_pca = [X[cell_idx].copy()]
+        pos = X[cell_idx].copy()
+        pt_current = float(pseudotime[cell_idx])
+        clusters_visited = [_nearest_cluster(pos)]
+        pseudotimes_along = [pt_current]
+
+        for step in range(n_steps):
+            v = _velocity_at(pos, pt_current)
+
+            if np.linalg.norm(v) < 1e-8:
+                break
+
+            pos = pos + sign * dt * v
+            path_pca.append(pos.copy())
+
+            if evolve_pseudotime:
+                pt_current = _estimate_pseudotime_at(pos)
+            pseudotimes_along.append(pt_current)
+
+            clusters_visited.append(_nearest_cluster(pos))
+
+            dist_to_nearest, _ = tree.query(pos, k=1)
+            if dist_to_nearest > 5 * mean_nn_dist:
+                break
+
+            if pt_current < -0.05 or pt_current > 1.05:
+                break
+
+        return np.array(path_pca), clusters_visited, pseudotimes_along
+
+    def _matches_target(clusters_visited, sign):
+        """Check if this trajectory reached the target cluster."""
+        if target_cluster is None:
+            return True
+        if sign > 0:
+            # Forward: check terminal
+            return clusters_visited[-1] == target_cluster
+        else:
+            # Backward: check origin (last visited going backward = origin)
+            return clusters_visited[-1] == target_cluster
+
+    # ------------------------------------------------------------------
+    # Integrate trajectories with target filtering
+    # ------------------------------------------------------------------
+    trajectories_pca = []
+    trajectories_umap = []
+    trajectory_metadata = []
+
+    directions_to_run = []
+    if direction == "forward":
+        directions_to_run = [("forward", 1.0)]
+    elif direction == "backward":
+        directions_to_run = [("backward", -1.0)]
+    elif direction == "both":
+        directions_to_run = [("forward", 1.0), ("backward", -1.0)]
+
+    for dir_name, sign in directions_to_run:
+        collected = 0
+        attempts = 0
+        max_attempts = n_trajectories * max_attempts_factor
+
+        # Shuffle candidates
+        shuffled = rng.permutation(all_candidates)
+        candidate_idx = 0
+
+        while collected < n_trajectories and attempts < max_attempts:
+            # Pick next candidate (cycle through if needed)
+            cell_idx = shuffled[candidate_idx % len(shuffled)]
+            candidate_idx += 1
+            attempts += 1
+
+            path_pca, clusters_visited, pt_along = _integrate(cell_idx, sign)
+
+            # Check target filter
+            if not _matches_target(clusters_visited, sign):
+                continue
+
+            # Skip very short trajectories
+            if len(path_pca) < 5:
+                continue
+
+            traj_id = len(trajectory_metadata)
+            trajectories_pca.append(path_pca)
+
+            if has_umap:
+                path_umap = np.array([_project_to_umap(p) for p in path_pca])
+                trajectories_umap.append(path_umap)
+
+            if sign > 0:
+                origin_cluster = clusters_visited[0]
+                terminal_cluster = clusters_visited[-1]
+            else:
+                origin_cluster = clusters_visited[-1]
+                terminal_cluster = clusters_visited[0]
+
+            trajectory_metadata.append({
+                "id": traj_id,
+                "start_cell": int(cell_idx),
+                "start_cluster": str(adata.obs[cluster_key].iloc[cell_idx]),
+                "direction": dir_name,
+                "n_steps": len(path_pca),
+                "clusters_visited": clusters_visited,
+                "pseudotime_along": pt_along,
+                "origin_cluster": origin_cluster,
+                "terminal_cluster": terminal_cluster,
+            })
+
+            collected += 1
+
+        if target_cluster is not None:
+            print(f"  {dir_name.capitalize()}: found {collected}/{n_trajectories} "
+                  f"trajectories reaching '{target_cluster}' "
+                  f"({attempts} attempts)")
+
+    adata.uns["velot_trajectories"] = {
+        "paths_pca": trajectories_pca,
+        "paths_umap": trajectories_umap if has_umap else [],
+        "metadata": trajectory_metadata,
+        "start_cluster": start_cluster,
+        "target_cluster": target_cluster,
+        "direction": direction,
+        "n_trajectories": len(trajectory_metadata),
+        "n_steps": n_steps,
+        "step_size": step_size,
+        "used_network": has_network,
+        "evolved_pseudotime": evolve_pseudotime,
+    }
+
+    # Summary
+    print(f"  Total: {len(trajectory_metadata)} trajectories "
+          f"({direction}) from '{start_cluster}'"
+          + (f" to '{target_cluster}'" if target_cluster else ""))
+
+    if has_network:
+        print(f"  Using continuous velocity field (neural network)")
+
+    for dir_name, _ in directions_to_run:
+        dir_meta = [m for m in trajectory_metadata if m["direction"] == dir_name]
+        if not dir_meta:
+            continue
+        if dir_name == "forward":
+            endpoints = [m["terminal_cluster"] for m in dir_meta]
+            label = "Terminal"
+        else:
+            endpoints = [m["origin_cluster"] for m in dir_meta]
+            label = "Origin"
+
+        unique, counts = np.unique(endpoints, return_counts=True)
+        summary = dict(zip(unique, counts))
+        print(f"  {dir_name.capitalize()} — {label} clusters: {summary}")
+
+    return adata
+
+
+def simulate_flow(
+    adata: AnnData,
+    n_particles: int = 200,
+    source_cluster: Optional[str] = None,
+    source_pseudotime_min: float = 0.0,
+    source_pseudotime_max: float = 0.1,
+    source_x_lim: tuple = (-np.inf, np.inf),
+    source_y_lim: tuple = (-np.inf, np.inf),
+    n_steps: int = 300,
+    step_size: float = 0.05,
+    diffusion: float = 0.5,
+    basis: str = "X_pca",
+    cluster_key: str = "clusters",
+    noise_scale: float = 0.0,
+    random_state: int = 42,
+) -> AnnData:
+    """
+    Simulate a flow of particles through the learned velocity field.
+
+    Drops particles at the "top of the river" (low pseudotime or
+    a source cluster) and integrates them forward through the
+    velocity field with optional stochastic diffusion.
+
+    The integration follows a stochastic differential equation:
+
+        x_{n+1} = x_n + dt * v(x_n, τ_n) + sqrt(2 * D * dt) * η_n
+
+    where D is the diffusion coefficient and η is Gaussian noise.
+    The diffusion allows particles starting from the same region
+    to explore different branches at bifurcation points, producing
+    realistic fate distributions.
+
+    Parameters
+    ----------
+    adata
+        Must have the smoothing network trained.
+    n_particles
+        Number of particles to simulate.
+    source_cluster
+        Cluster to seed particles from. If None, uses cells
+        with lowest pseudotime.
+    source_pseudotime_max
+        If source_cluster is None, seed from cells with
+        pseudotime below this value.
+    n_steps
+        Maximum number of integration steps.
+    step_size
+        Euler step size as fraction of mean velocity magnitude.
+    diffusion
+        Diffusion coefficient controlling stochasticity.
+        0.0 = deterministic (all trajectories converge).
+        0.1-0.5 = mild stochasticity (some branching exploration).
+        1.0+ = strong stochasticity (wide exploration).
+        The noise is scaled relative to the local velocity
+        magnitude so it is adaptive.
+    basis
+        PCA embedding key.
+    cluster_key
+        Cluster annotation column.
+    noise_scale
+        Gaussian noise added to INITIAL positions only.
+        Separate from diffusion which is added at every step.
+    random_state
+        Random seed.
+
+    Returns
+    -------
+    adata with ``adata.uns['velot_flow']``.
+
+    Examples
+    --------
+    Deterministic flow (trajectories will converge)::
+
+        velot.tl.simulate_flow(adata, diffusion=0.0, ...)
+
+    Stochastic flow (trajectories explore branches)::
+
+        velot.tl.simulate_flow(adata, diffusion=0.3, ...)
+
+    Strong diffusion (wide exploration)::
+
+        velot.tl.simulate_flow(adata, diffusion=1.0, ...)
+    """
+    _check_fields(adata, obsm_keys=[basis], obs_keys=["pseudotime"])
+
+    if "velot_smoothing" not in adata.uns or "network" not in adata.uns["velot_smoothing"]:
+        raise ValueError(
+            "Smoothing network not found. Run velot.tl.velocity(smooth=True) first."
+        )
+
+    X = adata.obsm[basis]
+    V = adata.obsm["velot_velocity"]
+    pseudotime = adata.obs["pseudotime"].values
+    n_cells, dim = X.shape
+
+    net = adata.uns["velot_smoothing"]["network"]
+    use_pt = adata.uns["velot_smoothing"]["use_pseudotime"]
+    net.eval()
+
+    tree = cKDTree(X)
+    rng = np.random.RandomState(random_state)
+
+    # Manifold boundary
+    sample_dists = tree.query(X[:min(200, n_cells)], k=2)[0][:, 1]
+    mean_nn_dist = np.mean(sample_dists)
+
+    # UMAP
+    has_umap = "X_umap" in adata.obsm
+    if has_umap:
+        X_umap = adata.obsm["X_umap"]
+
+    # Step size calibration
+    vel_magnitudes = np.linalg.norm(V, axis=1)
+    mean_vel_mag = np.mean(vel_magnitudes[vel_magnitudes > 1e-10])
+    if mean_vel_mag < 1e-10:
+        mean_vel_mag = 1.0
+    dt = step_size / mean_vel_mag
+
+    # Diffusion scale: relative to the typical inter-cell distance
+    # so that diffusion=1.0 means noise on the order of one cell spacing
+    diffusion_scale = diffusion * mean_nn_dist * np.sqrt(dt)
+
+    # ------------------------------------------------------------------
+    # Seed particles
+    # ------------------------------------------------------------------
+    if source_cluster is not None:
+        mask = adata.obs[cluster_key].astype(str) == str(source_cluster)
+        candidates = np.where(mask)[0]
+        if len(candidates) == 0:
+            raise ValueError(f"Cluster '{source_cluster}' not found.")
+        selected = rng.choice(
+            candidates,
+            size=min(n_particles, len(candidates)),
+            replace=(n_particles > len(candidates)),
+        )
+        source_label = source_cluster
+    elif (source_pseudotime_min is not None) & (source_pseudotime_max is not None):
+        mask = (source_pseudotime_min <= pseudotime) & (pseudotime <= source_pseudotime_max)
+        candidates = np.where(mask)[0]
+        if len(candidates) == 0:
+            candidates = np.argsort(pseudotime)[:max(10, n_particles)]
+        selected = rng.choice(candidates, size=min(n_particles, len(candidates)), replace=True)
+        source_label = f"{source_pseudotime_min} ≤ pseudotime ≤ {source_pseudotime_max}"
+    else:
+        mask = ((X[:, 0] >= source_x_lim[0]) & (X[:, 0] <= source_x_lim[1]) &
+        (X[:, 1] >= source_y_lim[0]) & (X[:, 1] <= source_y_lim[1]))
+
+        candidates = np.where(mask)[0]
+        if len(candidates) == 0:
+            candidates = np.argsort(pseudotime)[:max(10, n_particles)]
+        selected = rng.choice(candidates, size=min(n_particles, len(candidates)), replace=True)
+        source_label = f"x lim $\in$ {source_x_lim}; x lim $\in$ {source_y_lim}"
+
+    # Initial positions
+    initial_positions = X[selected].copy()
+    if noise_scale > 0:
+        initial_positions += rng.normal(0, noise_scale, initial_positions.shape)
+
+    initial_pseudotimes = pseudotime[selected].copy()
+
+    print(f"  Seeding {len(selected)} particles from {source_label}")
+    print(f"  Diffusion coefficient: {diffusion} "
+          f"(scale={diffusion_scale:.4f} per step)")
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+    def _velocity_at(pos, pt_value):
+        pos_t = torch.tensor(
+            pos.reshape(1, -1).astype(np.float32), device=DEVICE
+        )
+        pt_t = torch.tensor(
+            [[pt_value]], dtype=torch.float32, device=DEVICE
+        )
+        with torch.no_grad():
+            v = net(pos_t, pt_t if use_pt else None)
+        return v.cpu().numpy().flatten()
+
+    def _estimate_pseudotime_at(pos):
+        dists, indices = tree.query(pos, k=min(10, n_cells - 1))
+        weights = 1.0 / (dists + 1e-10)
+        weights = weights / weights.sum()
+        return float(np.sum(pseudotime[indices] * weights))
+
+    def _nearest_cluster(pos):
+        _, idx = tree.query(pos, k=1)
+        return str(adata.obs[cluster_key].iloc[idx])
+
+    def _project_to_umap(pos):
+        dists, indices = tree.query(pos, k=min(15, n_cells - 1))
+        dX = X[indices] - pos
+        dU = X_umap[indices] - X_umap[indices[0]]
+        try:
+            A, _, _, _ = np.linalg.lstsq(dX, dU, rcond=None)
+            return X_umap[indices[0]] + (pos - X[indices[0]]) @ A
+        except np.linalg.LinAlgError:
+            return X_umap[indices[0]]
+
+    # ------------------------------------------------------------------
+    # Integrate all particles (SDE)
+    # ------------------------------------------------------------------
+    all_paths = []
+    all_paths_umap = []
+    all_pseudotimes = []
+    all_clusters = []
+
+    for p_idx in range(len(selected)):
+        pos = initial_positions[p_idx].copy()
+        pt_current = float(initial_pseudotimes[p_idx])
+
+        path = [pos.copy()]
+        pt_along = [pt_current]
+        cl_along = [_nearest_cluster(pos)]
+
+        for step in range(n_steps):
+            # Deterministic drift
+            v = _velocity_at(pos, pt_current)
+            v_mag = np.linalg.norm(v)
+
+            if v_mag < 1e-8:
+                break
+
+            # Stochastic diffusion
+            # Scale noise by local velocity magnitude so that
+            # fast-moving regions get proportionally less noise
+            # and bifurcation points (where velocity is ambiguous)
+            # get relatively more exploration
+            if diffusion > 0:
+                noise = rng.normal(0, 1, dim)
+                # Adaptive: noise is perpendicular-biased
+                # Project out the velocity direction to get noise
+                # mostly perpendicular to the flow
+                v_unit = v / (v_mag + 1e-10)
+                parallel = np.dot(noise, v_unit) * v_unit
+                perpendicular = noise - parallel
+                # Keep 80% perpendicular, 20% parallel
+                # This lets particles spread across branches
+                # without fighting the main flow direction
+                noise = 0.2 * parallel + 0.8 * perpendicular
+                noise = noise * diffusion_scale
+            else:
+                noise = 0.0
+
+            # SDE step: drift + diffusion
+            pos = pos + dt * v + noise
+            path.append(pos.copy())
+
+            # Update pseudotime
+            pt_current = _estimate_pseudotime_at(pos)
+            pt_along.append(pt_current)
+            cl_along.append(_nearest_cluster(pos))
+
+            # Stop conditions
+            dist_to_nearest, _ = tree.query(pos, k=1)
+            if dist_to_nearest > 5 * mean_nn_dist:
+                break
+            if pt_current > 0.99:
+                break
+
+        path = np.array(path)
+        all_paths.append(path)
+        all_pseudotimes.append(pt_along)
+        all_clusters.append(cl_along)
+
+        if has_umap:
+            path_umap = np.array([_project_to_umap(p) for p in path])
+            all_paths_umap.append(path_umap)
+
+    # ------------------------------------------------------------------
+    # Summary statistics
+    # ------------------------------------------------------------------
+    terminal_clusters = [cl[-1] for cl in all_clusters]
+    unique_terminals, terminal_counts = np.unique(
+        terminal_clusters, return_counts=True
+    )
+    terminal_fractions = dict(zip(
+        unique_terminals,
+        (terminal_counts / terminal_counts.sum()).round(3),
+    ))
+
+    final_pseudotimes = [pt[-1] for pt in all_pseudotimes]
+    mean_steps = np.mean([len(p) for p in all_paths])
+
+    adata.uns["velot_flow"] = {
+        "particles": all_paths,
+        "particles_umap": all_paths_umap if has_umap else [],
+        "pseudotime_along": all_pseudotimes,
+        "cluster_along": all_clusters,
+        "initial_cells": selected,
+        "source": source_label,
+        "n_particles": len(selected),
+        "diffusion": diffusion,
+        "metadata": {
+            "terminal_fractions": terminal_fractions,
+            "mean_final_pseudotime": float(np.mean(final_pseudotimes)),
+            "mean_trajectory_length": float(mean_steps),
+        },
+    }
+
+    print(f"  Flow simulation complete:")
+    print(f"    Mean trajectory length: {mean_steps:.0f} steps")
+    print(f"    Mean final pseudotime: {np.mean(final_pseudotimes):.3f}")
+    print(f"    Terminal fate distribution:")
+    for cl, frac in sorted(terminal_fractions.items(), key=lambda x: -x[1]):
+        count = int(terminal_counts[unique_terminals == cl][0])
+        print(f"      {cl}: {frac:.1%} ({count} particles)")
+
+    return adata

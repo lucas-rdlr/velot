@@ -1,0 +1,11 @@
+data/
+datasets/
+*.h5ad
+
+agusti/
+
+*.egg-info/
+build/
+dist/
+
+__pycache__/
