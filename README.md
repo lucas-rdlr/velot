@@ -4,6 +4,10 @@
 
 VelOT (Velocity via Optimal Transport) is a kinetic-free framework for estimating RNA velocity from single-cell transcriptomic data. Instead of modeling the molecular kinetics of transcription, splicing, and degradation, VelOT treats velocity inference as a mass transport problem in high-dimensional gene expression space. The method proceeds in four stages: (1) preprocessing and pseudotime inference, (2) spatial-temporal windowing, (3) optimal transport velocity estimation, and (4) neural velocity field smoothing. All velocity computations are performed in PCA space, with projection to UMAP only for visualization.
 
+<p align="center">
+  <img src="article/figures/figure 1/panel1.png">
+</p>
+
 ---
 
 ## Stage 1: Preprocessing and Pseudotime Inference
@@ -125,7 +129,7 @@ $$\mathbf{v}_i^{\text{OT}} = \sum_{j \in w_{\text{tgt}}} \hat{P}^*_{ij} \left(\m
 
 where $\hat{P}^*_{ij}$ is the row-normalized transport plan:
 
-$$\hat{P}^*_{ij} = \frac{P^*_{ij}}{\sum_{j'} P^*_{ij'}}$$
+$$\hat{P}^*_{ij} = \frac{P^*_{ij}}{\sum_{j} P^*_{ij}}$$
 
 This normalization ensures that each source cell's velocity is a proper weighted average of displacements to target cells, independent of the total mass transported.
 
