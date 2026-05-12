@@ -4,7 +4,7 @@ set -euo pipefail
 # Spatial Hubs Figure Generator - LaTeX/Bash Version
 # Letters overlaid on images WITHOUT boxes
 
-OUTBASE="${1:-panel3}"
+OUTBASE="${1:-panel5}"
 
 # Find required tools
 TECTONIC="$(command -v tectonic || true)"
@@ -82,39 +82,39 @@ cat > "${OUTBASE}.tex" <<'EOF'
 
 % Row 1
 \begin{minipage}[t]{0.32\linewidth}
-\Panel{a}{Cell clusters}{figure3_a.png}{width=\linewidth}
+\Panel{a}{Cell clusters}{figure5_a.png}{width=\linewidth}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.33\linewidth}
-\Panel{b}{Diffusion pseudotime}{figure3_b.png}{width=\linewidth}
+\Panel{b}{Diffusion pseudotime}{figure5_b.png}{width=\linewidth}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.33\linewidth}
-\Panel{c}{VelOT confidence}{figure3_c.png}{width=\linewidth}
-\end{minipage}
+\Panel{c}{VelOT confidence}{figure5_c.png}{width=\linewidth}
+\end{minipage}\hfill
 \vspace{5mm}
 
 
 % Row 2
 \begin{minipage}[t]{0.33\linewidth}
-\Panel{e}{Raw VelOT quiver}{figure3_e.png}{width=\linewidth}
+\Panel{d}{Raw VelOT quiver}{figure5_e.png}{width=\linewidth}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.33\linewidth}
-\Panel{f}{Smooth VelOT quiver}{figure3_f.png}{width=\linewidth}
+\Panel{e}{Smooth VelOT quiver}{figure5_f.png}{width=\linewidth}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.33\linewidth}
-\Panel{d}{VelOT velocity stream}{figure3_d.png}{width=\linewidth}
+\Panel{f}{VelOT velocity stream}{figure5_d.png}{width=\linewidth}
 \end{minipage}
 \vspace{5mm}
 
 
 % Row 3
 \begin{minipage}[t]{0.31\linewidth}
-\Panel{g}{VelOT training losses}{figure3_g.png}{width=\linewidth}
+\Panel{g}{VelOT training losses}{figure5_g.png}{width=\linewidth}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.32\linewidth}
-\Panel{h}{VelOT velocity metrics}{figure3_h.png}{width=\linewidth}
+\Panel{h}{VelOT velocity metrics}{figure5_h.png}{width=\linewidth}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.33\linewidth}
-\Panel{i}{Single trajectory}{figure3_i.png}{width=\linewidth}
+\Panel{i}{Single trajectory}{figure5_i.png}{width=\linewidth}
 \end{minipage}
 
 \end{minipage}

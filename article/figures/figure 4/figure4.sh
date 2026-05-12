@@ -81,36 +81,40 @@ cat > "${OUTBASE}.tex" <<'EOF'
 \begin{minipage}{200mm}
 
 % Row 1
-\begin{minipage}[t]{0.33\linewidth}
-\Panel{a}{Cell clusters}{/home/user/Documents/velot/figures/figure 4/figure4_a.png}{width=\linewidth}
+\begin{minipage}[t]{0.32\linewidth}
+\Panel{a}{Cell clusters}{figure4_a.png}{width=\linewidth}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.33\linewidth}
-\Panel{b}{Diffusion pseudotime}{/home/user/Documents/velot/figures/figure 4/figure4_b.png}{width=\linewidth}
+\Panel{b}{Diffusion pseudotime}{figure4_b.png}{width=\linewidth}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.33\linewidth}
-\Panel{c}{VelOT confidence}{/home/user/Documents/velot/figures/figure 4/figure4_c.png}{width=\linewidth}
+\Panel{c}{VelOT confidence}{figure4_c.png}{width=\linewidth}
 \end{minipage}\hfill
 \vspace{5mm}
+
+
 % Row 2
 \begin{minipage}[t]{0.33\linewidth}
-\Panel{d}{Raw VelOT quiver}{/home/user/Documents/velot/figures/figure 4/figure4_e.png}{width=\linewidth}
+\Panel{d}{Raw VelOT quiver}{figure4_e.png}{width=\linewidth}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.33\linewidth}
-\Panel{e}{Smooth VelOT quiver}{/home/user/Documents/velot/figures/figure 4/figure4_f.png}{width=\linewidth}
+\Panel{e}{Smooth VelOT quiver}{figure4_f.png}{width=\linewidth}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.33\linewidth}
-\Panel{f}{VelOT velocity stream}{/home/user/Documents/velot/figures/figure 4/figure4_d.png}{width=\linewidth}
+\Panel{f}{VelOT velocity stream}{figure4_d.png}{width=\linewidth}
 \end{minipage}
 \vspace{5mm}
+
+
 % Row 3
 \begin{minipage}[t]{0.31\linewidth}
-\Panel{g}{VelOT training losses}{/home/user/Documents/velot/figures/figure 4/figure4_g.png}{width=\linewidth}
+\Panel{g}{VelOT training losses}{figure4_g.png}{width=\linewidth}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.32\linewidth}
-\Panel{h}{VelOT velocity metrics}{/home/user/Documents/velot/figures/figure 4/figure4_h.png}{width=\linewidth}
+\Panel{h}{VelOT velocity metrics}{figure4_h.png}{width=\linewidth}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.33\linewidth}
-\Panel{i}{Single trajectory}{/home/user/Documents/velot/figures/figure 4/figure4_i.png}{width=\linewidth}
+\Panel{i}{Single trajectory}{figure4_i.png}{width=\linewidth}
 \end{minipage}
 
 \end{minipage}
