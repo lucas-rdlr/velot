@@ -58,6 +58,8 @@ def build_windows(
     overlap_fraction: float = 0.5,
     min_window_size: int = 20,
     spatial_key: Optional[str] = None,
+    tail_handling: str = "force",  # NEW: "force", "drop", or "split"
+    tail_threshold: int = 10,      # NEW: Used only if tail_handling="drop"
     random_state: int = 42,
 ) -> AnnData:
     """
@@ -167,14 +169,46 @@ def build_windows(
 
         # Create windows
         windows = []
+        last_start = 0
         for start in range(0, len(sorted_indices) - local_ws + 1, local_step):
             windows.append(sorted_indices[start : start + local_ws])
+            last_start = start
 
-        # Ensure the tail end is included
-        if (len(windows) > 0
-                and windows[-1][-1] != sorted_indices[-1]
-                and len(sorted_indices) >= local_ws):
-            windows.append(sorted_indices[-local_ws:])
+        if len(windows) > 0:
+            next_start = last_start + local_step
+            remaining_count = len(sorted_indices) - next_start
+
+            if remaining_count > 0:
+                if tail_handling == "split" and remaining_count >= 2:
+                    # Distribute the remaining cells across two full-sized 
+                    # windows to smooth the overlap and add an extra OT step
+                    step_B = remaining_count // 2
+                    
+                    end_A = len(sorted_indices) - step_B
+                    start_A = max(0, end_A - local_ws)
+                    
+                    end_B = len(sorted_indices)
+                    start_B = max(0, end_B - local_ws)
+                    
+                    w_A = sorted_indices[start_A : end_A]
+                    w_B = sorted_indices[start_B : end_B]
+                    
+                    # Avoid duplicates if they perfectly overlap
+                    if not np.array_equal(windows[-1], w_A):
+                        windows.append(w_A)
+                    if not np.array_equal(windows[-1], w_B):
+                        windows.append(w_B)
+
+                elif tail_handling == "drop":
+                    # Only append the final forced window if the remaining
+                    # cells meet the user's noise threshold
+                    if remaining_count >= tail_threshold:
+                        windows.append(sorted_indices[-local_ws:])
+
+                else: 
+                    # "force" (Default behavior): Force the last window 
+                    # to capture the tail, regardless of overlap spike
+                    windows.append(sorted_indices[-local_ws:])
 
         # Pair consecutive windows
         for w_src, w_tgt in zip(windows[:-1], windows[1:]):
@@ -352,9 +386,9 @@ def compute_ot_velocity(
     confidence = counts / max_count
 
     if basis == "X_pca":
-        adata.obsm["velot_velocity_pca"] = V
+        adata.obsm["velot_velocity_raw_pca"] = V
     elif basis == "X_umap":
-        adata.obsm["velot_velocity_umap"] = V
+        adata.obsm["velot_velocity_raw_umap"] = V
     else:
         raise NotImplemented
 
@@ -424,8 +458,8 @@ class _VelocityNet(nn.Module):
 
 def smooth_velocity(
     adata: AnnData,
-    basis: str = "X_pca",
-    velocity_key: str = "velot_velocity_pca",
+    basis: str = "pca",
+    velocity_key: str = "velot_velocity_raw",
     n_epochs: int = 200,
     hidden_dim: int = 128,
     lr: float = 1e-3,
@@ -494,21 +528,21 @@ def smooth_velocity(
     adata with smoothed velocity.
     """    
     _check_fields(
-        adata, obsm_keys=[basis, velocity_key],
+        adata, obsm_keys=[f"X_{basis}", velocity_key],
         obs_keys=["velot_confidence"],
     )
 
     torch.manual_seed(random_state)
     np.random.seed(random_state)
 
-    X_np = adata.obsm[basis].astype(np.float32)
+    X_np = adata.obsm[f"X_{basis}"].astype(np.float32)
     V_np = adata.obsm[velocity_key].astype(np.float32)
     conf_np = adata.obs["velot_confidence"].values.astype(np.float32)
     pt_np = adata.obs["pseudotime"].values.astype(np.float32)
 
     n_cells, dim = X_np.shape
 
-    adata.obsm[f"{velocity_key}_raw"] = V_np.copy()
+    # adata.obsm[f"{velocity_key}_raw"] = V_np.copy()
 
     knn_indices = _build_knn_index(X_np, k=k_smooth)
 
@@ -666,7 +700,7 @@ def smooth_velocity(
             V_smooth.append(net(X_chunk, pt_chunk).cpu().numpy())
         V_smooth = np.concatenate(V_smooth, axis=0)
 
-    adata.obsm[velocity_key] = V_smooth
+    adata.obsm[f"velot_velocity_{basis}"] = V_smooth
 
     adata.uns["velot_smoothing"] = {
         "n_epochs": n_epochs,
@@ -774,6 +808,7 @@ def query_velocity(
 def project_to_umap(
     adata: AnnData,
     velocity_key: str = "velot_velocity_pca",
+    velocity_key_umap: str = "velot_velocity_umap",
     basis_pca: str = "X_pca",
     basis_umap: str = "X_umap",
     n_neighbors: int = 30,
@@ -826,7 +861,7 @@ def project_to_umap(
         # Project PCA velocity through the local Jacobian
         V_umap[i] = V_pca[i] @ A
 
-    adata.obsm["velot_velocity_umap"] = V_umap
+    adata.obsm[velocity_key_umap] = V_umap
 
     print(f"  Velocity projected to UMAP ({n_cells} cells)")
 
@@ -848,6 +883,8 @@ def velocity(
     overlap_fraction: float = 0.5,
     min_window_size: int = 20,
     spatial_key: Optional[str] = None,
+    tail_handling: str = "force",
+    tail_threshold: int = 10,
     # OT params
     reg: float = 0.05,
     lambda_time: float = 1.0,
@@ -923,6 +960,8 @@ def velocity(
         overlap_fraction=overlap_fraction,
         min_window_size=min_window_size,
         spatial_key=spatial_key,
+        tail_handling=tail_handling,
+        tail_threshold=tail_threshold,
         random_state=random_state,
     )
 
@@ -941,10 +980,10 @@ def velocity(
     if smooth:
         if verbose:
             print("\n[3/4] Smoothing velocity field...")
-        v_key = "velot_velocity_pca" if basis == "X_pca" else "velot_velocity_umap"
+        v_key = "velot_velocity_raw_pca" if basis == "X_pca" else "velot_velocity_raw_umap"
         smooth_velocity(
             adata,
-            basis=basis,
+            basis=basis.split("X_")[1],
             velocity_key=v_key,
             n_epochs=n_epochs,
             hidden_dim=hidden_dim,
@@ -964,7 +1003,9 @@ def velocity(
     if project_umap and "X_umap" in adata.obsm:
         if verbose:
             print("\n[4/4] Projecting to UMAP...")
-        project_to_umap(adata)
+        project_to_umap(adata, "velot_velocity_raw_pca", "velot_velocity_raw_umap")
+        if smooth:
+            project_to_umap(adata, "velot_velocity_pca", "velot_velocity_umap")
     else:
         if verbose:
             print("\n[4/4] UMAP projection: SKIPPED")

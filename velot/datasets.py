@@ -647,7 +647,7 @@ def synthetic_cycle(
 
     # Validate and set defaults
     if names is None:
-        names = [f"Phase_{i+1}" for i in range(n_segments)]
+        names = [f"Cluster {i+1}" for i in range(n_segments)]
     if len(names) != n_segments:
         raise ValueError(
             f"Length of names ({len(names)}) must match "
@@ -743,12 +743,12 @@ def synthetic_cycle(
 
     # PCA
     if X.shape[1] > 2:
-        sc.tl.pca(adata)
+        sc.pp.pca(adata)
     else:
         adata.obsm["X_pca"] = X.copy()
 
     # KNN + UMAP
-    sc.pp.neighbors(adata, n_neighbors=n_neighbors)
+    sc.pp.neighbors(adata, n_neighbors=n_neighbors, use_rep="X_pca")
     sc.tl.umap(adata)
 
     return adata

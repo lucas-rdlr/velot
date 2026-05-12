@@ -270,7 +270,8 @@ def summary(
     adata: AnnData,
     cluster_edges: Optional[Sequence[Tuple[str, str]]] = None,
     cluster_key: str = "clusters",
-    velocity_key: str = "velocity_umap",
+    embedding_key: str = "X_umap",
+    velocity_key: str = "velot_velocity_umap"
 ) -> dict:
     """
     Compute and print a summary of velocity metrics.
@@ -333,6 +334,7 @@ def summary(
         cbdir_raw = cross_boundary_correctness(
             adata, cluster_edges,
             cluster_key=cluster_key,
+            embedding_key=embedding_key,
             velocity_key=velocity_key,
             return_raw=True,
         )
