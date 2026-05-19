@@ -3,49 +3,60 @@ import scvelo as scv
 import velot
 from velot.benchmark import BenchmarkTimer, save_benchmark
 
+from scvelo.tools import flux_velocity
+
 import os
 from pathlib import Path
 os.chdir(Path(__file__).resolve().parent)
 
 # ── Config ──────────────────────────────────────────────────────
-MODEL_NAME = "scvelo_dynamical"
-DATASET_NAME = "erythroid"
-OUTPUT_DIR = "benchmark_results"
+MODEL_NAME = "flux_matching"
+DATASET_NAME = "pancreas"
+OUTPUT_DIR = "../benchmark_results/real"
 
-clusters_key = "celltype"
+basis = "umap"
+clusters_key = "clusters"
 n_pcs = 50
-n_neighs = 20
+n_neighs = 30
 
 edges = [
-    ('Blood progenitors 1', 'Blood progenitors 2'), 
-    ('Blood progenitors 2', 'Erythroid1'),
-    ('Erythroid1', 'Erythroid2'), 
-    ('Erythroid2', 'Erythroid3')
+    ("Ngn3 low EP", "Ngn3 high EP"),
+    ("Ngn3 high EP", "Fev+"),
+    ("Fev+", "Delta"),
+    ("Fev+", "Beta"),
+    ("Fev+", "Epsilon"),
+    ("Fev+", "Alpha"),
 ]
+
 # ── Timer ───────────────────────────────────────────────────────
 timer = BenchmarkTimer()
 
 # ── Load ────────────────────────────────────────────────────────
 with timer("load"):
-    adata = sc.read("/home/user/Documents/velot/article/data/Gastrulation/erythroid_lineage.h5ad")
+    adata = sc.read("/home/user/Documents/velot/article/datasets/endocrinogenesis_day15.5_preprocessed.h5ad")
 
 # ── Preprocess ──────────────────────────────────────────────────
 with timer("preprocess"):
-    scv.pp.filter_genes(adata, min_shared_counts=20)
-    scv.pp.normalize_per_cell(adata)
+    sc.pp.filter_cells(adata, min_counts=1)
+    scv.pp.filter_and_normalize(adata, min_shared_counts=20)
     sc.pp.log1p(adata)
-    sc.pp.highly_variable_genes(adata, n_top_genes=2000, subset=True)
-
+    sc.pp.highly_variable_genes(adata, n_top_genes=2000, flavor="seurat", subset=True)
     sc.pp.pca(adata, n_comps=n_pcs)
     sc.pp.neighbors(adata, n_pcs=n_neighs, n_neighbors=n_neighs)
-    scv.pp.moments(adata, n_pcs=None, n_neighbors=None)
+    scv.pp.moments(adata, n_neighbors=None, n_pcs=None)
+    sc.tl.umap(adata)
 
 # ── Velocity ────────────────────────────────────────────────────
 with timer("velocity"):
-    scv.tl.recover_dynamics(adata, n_jobs=12)
-    scv.tl.velocity(adata, mode="dynamical", vkey="dynvelo", n_jobs=12)
-    scv.tl.velocity_graph(adata, vkey="dynvelo", n_jobs=12)
-    scv.tl.velocity_embedding(adata, vkey="dynvelo", basis="pca")
+    scv.tl.velocity(adata, mode="dynamical", mask_zero=False)
+    flux_velocity(
+        adata,
+        model_family="dynamical",
+        lr=1e-3,
+        epochs=100,
+    )
+    scv.tl.velocity_graph(adata, n_jobs=8)
+    scv.tl.velocity_embedding(adata, basis=basis)
 
 # ── Evaluate ────────────────────────────────────────────────────
 with timer("evaluate"):
@@ -53,9 +64,10 @@ with timer("evaluate"):
         adata,
         cluster_edges=edges,
         cluster_key=clusters_key,
-        embedding_key="X_pca",
-        velocity_key="dynvelo_pca",
+        embedding_key=f"X_{basis}",
+        velocity_key=f"velocity_{basis}"
     )
+
 
 # ── Save ────────────────────────────────────────────────────────
 print(timer)
@@ -70,7 +82,6 @@ save_benchmark(
         "n_cells": adata.n_obs,
         "n_genes": adata.n_vars,
         "n_pcs": n_pcs,
-        "n_neighbors": n_neighs,
-        "n_jobs": 12
+        "n_neighbors": n_neighs
     }
 )

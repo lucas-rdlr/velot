@@ -1,5 +1,4 @@
 import scanpy as sc
-import scvelo as scv
 import velot
 from velot.benchmark import BenchmarkTimer, save_benchmark
 
@@ -8,9 +7,15 @@ from pathlib import Path
 os.chdir(Path(__file__).resolve().parent)
 
 # ── Config ──────────────────────────────────────────────────────
-MODEL_NAME = "scvelo_dynamical"
+MODEL_NAME = "velot"
 DATASET_NAME = "pancreas"
-OUTPUT_DIR = "benchmark_results"
+OUTPUT_DIR = "../benchmark_results/real"
+
+basis = "pca"
+project_umap = True if basis == "pca" else False
+clusters_key = "clusters"
+n_pcs = 10
+n_neighs = 20
 
 edges = [
     ("Ngn3 low EP", "Ngn3 high EP"),
@@ -33,31 +38,35 @@ with timer("load"):
 
 # ── Preprocess ──────────────────────────────────────────────────
 with timer("preprocess"):
-    scv.pp.filter_genes(adata, min_shared_counts=20)
-    scv.pp.normalize_per_cell(adata)
-    sc.pp.highly_variable_genes(adata, n_top_genes=2000, subset=True)
-    sc.pp.log1p(adata)
-
-    sc.pp.pca(adata, n_comps=50)
-    sc.pp.neighbors(adata, n_pcs=30, n_neighbors=30)
-    scv.pp.moments(adata, n_pcs=30, n_neighbors=30)
+    velot.pp.pca(adata, n_pcs=n_pcs)
+    sc.pp.neighbors(adata, n_neighs, use_rep="X_pca")
+    velot.pp.pseudotime(adata, root_cluster="Ngn3 low EP", cluster_key=clusters_key)
+    adata.obs["clusters_id"] = adata.obs[clusters_key].cat.codes
 
 # ── Velocity ────────────────────────────────────────────────────
 with timer("velocity"):
-    scv.tl.recover_dynamics(adata, n_jobs=12)
-    scv.tl.velocity(adata, mode="dynamical", vkey="dynvelo", n_jobs=12)
-    scv.tl.velocity_graph(adata, vkey="dynvelo", n_jobs=12)
-    scv.tl.velocity_embedding(adata, vkey="dynvelo", basis="pca")
+    velot.tl.velocity(
+        adata=adata,
+        basis=f"X_{basis}",
+        smooth=True,
+        n_clusters=None,
+        window_size=50,
+        overlap_fraction=0,
+        spatial_key="clusters_id",
+        reg=0.1, lambda_time=1, n_epochs=150, lambda_smooth=0.7, lambda_curl=0.7, lambda_divergence=0,
+        project_umap=project_umap
+    )
 
 # ── Evaluate ────────────────────────────────────────────────────
 with timer("evaluate"):
     results = velot.metrics.summary(
         adata,
         cluster_edges=edges,
-        cluster_key="clusters",
-        embedding_key="X_pca",
-        velocity_key="dynvelo_pca",
+        cluster_key=clusters_key,
+        embedding_key=f"X_{basis}",
+        velocity_key=f"velot_velocity_{basis}"
     )
+
 
 # ── Save ────────────────────────────────────────────────────────
 print(timer)
@@ -71,8 +80,7 @@ save_benchmark(
     extra_info={
         "n_cells": adata.n_obs,
         "n_genes": adata.n_vars,
-        "n_pcs": 30,
-        "n_neighbors": 30,
-        "n_jobs": 12,
-    },
+        "n_pcs": n_pcs,
+        "n_neighbors": n_neighs
+    }
 )
