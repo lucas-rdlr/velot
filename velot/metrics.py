@@ -317,10 +317,16 @@ def summary(
         k: float(np.mean(v)) if len(v) > 0 else float("nan")
         for k, v in iccoh_raw.items()
     }
+    iccoh_median = {
+        k: float(np.median(v)) if len(v) > 0 else float("nan")
+        for k, v in iccoh_raw.items()
+    }
     iccoh_global = float(np.nanmean(list(iccoh_means.values()))) if iccoh_means else float("nan")
+    iccoh_global_median = float(np.nanmedian(list(iccoh_median.values()))) if iccoh_median else float("nan")
 
     results["iccoh"] = iccoh_raw
     results["iccoh_mean"] = iccoh_global
+    results["iccoh_median"] = iccoh_global_median
 
     print("=" * 50)
     print("VelOT Velocity Metrics")
@@ -342,10 +348,16 @@ def summary(
             k: float(np.mean(v)) if len(v) > 0 else float("nan")
             for k, v in cbdir_raw.items()
         }
+        cbdir_median = {
+            k: float(np.median(v)) if len(v) > 0 else float("nan")
+            for k, v in cbdir_raw.items()
+        }
         cbdir_global = float(np.nanmean(list(cbdir_means.values()))) if cbdir_means else float("nan")
+        cbdir_global_median = float(np.nanmedian(list(cbdir_median.values()))) if cbdir_median else float("nan")
 
         results["cbdir"] = cbdir_raw
         results["cbdir_mean"] = cbdir_global
+        results["cbdir_median"] = cbdir_global_median
 
         print(f"\nCross-Boundary Correctness (mean: {cbdir_global:.3f}):")
         for (u, v) in cbdir_raw.keys():

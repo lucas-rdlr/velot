@@ -2261,6 +2261,7 @@ from typing import List
 def benchmark_comparison(
     output_dir: str = "benchmark_results",
     models: Optional[List[str]] = None,
+    models_order: Optional[List[str]] = None,
     datasets: Optional[List[str]] = None,
     metrics: Optional[List[str]] = None,
     detail: str = "aggregated",
@@ -2361,9 +2362,13 @@ def benchmark_comparison(
     axes = axes.flatten()
 
     # Color palette for models
-    all_models = df_summary["model"].unique()
+    if models_order is not None:
+        all_models = models_order
+    else:
+        all_models = df_summary["model"].unique()
     n_models = len(all_models)
-    colors = plt.cm.Set2(np.linspace(0, 1, max(n_models, 1)))
+    # colors = plt.cm.Set2(np.linspace(0, 1, max(n_models, 1)))
+    colors = plt.cm.Set2(np.arange(0, n_models))
     model_colors = dict(zip(all_models, colors))
 
     # ── Metric panels ───────────────────────────────────────────

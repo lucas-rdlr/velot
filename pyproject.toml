@@ -17,14 +17,14 @@ dependencies = [
     "scanpy>=1.9",
     "scikit-learn>=1.0",
     "matplotlib>=3.5",
-    "torch>=1.12",
     "POT>=0.8",
     "scvelo>=0.2.4",
-    "tqdm>=4.60"
+    "tqdm>=4.60",
+    "ipywidgets"
 ]
 
 [project.optional-dependencies]
-all = ["scvelo>=0.2.4", "seaborn>=0.11"]
+plot = ["seaborn>=0.11"]
 
 [tool.setuptools.packages.find]
 include = ["velot*"]

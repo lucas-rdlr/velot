@@ -3,6 +3,10 @@ datasets/
 *.h5ad
 
 agusti/
+flux_matching/
+scvelo/
+scvelo2/
+LatentVelo/
 
 *.egg-info/
 build/

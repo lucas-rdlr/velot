@@ -803,6 +803,78 @@ def query_velocity(
 # =====================================================================
 # 4. PROJECTION TO UMAP
 # =====================================================================
+    
+def project_to_embedding(
+    adata: AnnData,
+    velocity_key: str = "velot_velocity_pca",
+    velocity_key_umap: str = "velot_velocity_umap",
+    basis_pca: str = "X_pca",
+    basis_embedding: str = "X_umap",
+    n_neighbors: int = 30,
+) -> AnnData:
+    """
+    Project velocity from PCA space to any 2D embedding space for visualization.
+
+    Uses a local linear approximation: for each cell, the Jacobian
+    of the PCA→2D (UMAP, TSNE...) mapping is estimated from its KNN neighborhood
+    via least-squares, and the PCA velocity is transformed accordingly.
+
+    Note: UMAP is for visualization only. The velocity in PCA space
+    (``adata.obsm['velot_velocity']``) is the primary output.
+
+    Parameters
+    ----------
+    adata
+        Must contain PCA and UMAP embeddings, and computed velocity.
+
+    Returns
+    -------
+    adata with ``adata.obsm['velocity_umap']`` populated.
+    """
+    _check_fields(
+        adata,
+        obsm_keys=[velocity_key, basis_pca, basis_embedding],
+    )
+
+    if basis_embedding == "X_tsne":
+        import warnings
+        warnings.warn(
+            "t-SNE distorts global distances. Velocity arrows show "
+            "local directions correctly but arrow lengths and "
+            "cross-cluster directions may be misleading. "
+            "Consider using UMAP for velocity visualization.",
+            UserWarning,
+        )
+
+    X_pca = adata.obsm[basis_pca]
+    X_umap = adata.obsm[basis_embedding]
+    V_pca = adata.obsm[velocity_key]
+
+    n_cells = X_pca.shape[0]
+
+    # Build KNN in PCA space for the local linear approximation
+    knn_indices = _build_knn_index(X_pca, k=n_neighbors)
+
+    V_umap = np.zeros_like(X_umap)
+
+    for i in range(n_cells):
+        nbrs = knn_indices[i]
+
+        # Local displacement in PCA and UMAP
+        dX = X_pca[nbrs] - X_pca[i]       # (k, d_pca)
+        dU = X_umap[nbrs] - X_umap[i]     # (k, 2)
+
+        # Least-squares: dU ≈ dX @ A  →  A = (dX^T dX)^{-1} dX^T dU
+        A, _, _, _ = np.linalg.lstsq(dX, dU, rcond=None)
+
+        # Project PCA velocity through the local Jacobian
+        V_umap[i] = V_pca[i] @ A
+
+    adata.obsm[velocity_key_umap] = V_umap
+
+    print(f"  Velocity projected to 2D embedding {basis_embedding} ({n_cells} cells)")
+
+    return adata
 
 
 def project_to_umap(
@@ -899,6 +971,7 @@ def velocity(
     use_pseudotime: bool = True,
     # Output
     project_umap: bool = True,
+    project_basis: str = "X_umap",
     random_state: int = 42,
     verbose: bool = True,
 ) -> AnnData:
@@ -1000,12 +1073,13 @@ def velocity(
             print("\n[3/4] Smoothing: SKIPPED")
 
     # Step 4: Project to UMAP
-    if project_umap and "X_umap" in adata.obsm:
+    if project_umap and project_basis in adata.obsm:
+        basis_name = project_basis.split("X_")[1]
         if verbose:
             print("\n[4/4] Projecting to UMAP...")
-        project_to_umap(adata, "velot_velocity_raw_pca", "velot_velocity_raw_umap")
+        project_to_umap(adata, "velot_velocity_raw_pca", f"velot_velocity_raw_{basis_name}", basis_umap=project_basis)
         if smooth:
-            project_to_umap(adata, "velot_velocity_pca", "velot_velocity_umap")
+            project_to_umap(adata, "velot_velocity_pca", f"velot_velocity_{basis_name}", basis_umap=project_basis)
     else:
         if verbose:
             print("\n[4/4] UMAP projection: SKIPPED")
