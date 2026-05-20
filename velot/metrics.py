@@ -334,6 +334,10 @@ def summary(
     print(f"\nInner-Cluster Coherence (mean: {iccoh_global:.3f}):")
     for cat in sorted(iccoh_means.keys()):
         print(f"  {str(cat):>25s}: {iccoh_means[cat]:.3f}")
+    
+    print(f"\nInner-Cluster Coherence (median: {iccoh_global_median:.3f}):")
+    for cat in sorted(iccoh_median.keys()):
+        print(f"  {str(cat):>25s}: {iccoh_median[cat]:.3f}")
 
     # CBDir — get raw scores
     if cluster_edges is not None:
