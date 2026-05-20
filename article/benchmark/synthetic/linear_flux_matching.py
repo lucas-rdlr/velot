@@ -11,20 +11,17 @@ os.chdir(Path(__file__).resolve().parent)
 
 # ── Config ──────────────────────────────────────────────────────
 MODEL_NAME = "flux_matching"
-DATASET_NAME = "hindbrain"
-OUTPUT_DIR = "../benchmark_results/real"
+DATASET_NAME = "linear"
+OUTPUT_DIR = "../benchmark_results/synthetic"
 
 basis = "umap"
-clusters_key = "Celltype"
+clusters_key = "milestone"
 n_pcs = 50
 n_neighs = 30
 
 edges = [
-    ('Neural stem cells', 'Proliferating VZ progenitors'),
-    ('Proliferating VZ progenitors', 'VZ progenitors'),
-    ('VZ progenitors', 'Gliogenic progenitors'),
-    ('VZ progenitors', 'Differentiating GABA interneurons'),
-    ('Differentiating GABA interneurons', 'GABA interneurons')
+    ('A', 'B'),
+    ('B', 'C')
 ]
 
 # ── Timer ───────────────────────────────────────────────────────
@@ -32,14 +29,31 @@ timer = BenchmarkTimer()
 
 # ── Load ────────────────────────────────────────────────────────
 with timer("load"):
-    adata = sc.read_h5ad("/home/user/Documents/velot/article/data/HindBrain/Hindbrain_GABA_Glio.h5ad")
+    adata = sc.read("/home/user/Documents/velot/article/data/Synthetic/synthetic_linear.h5ad")
 
 # ── Preprocess ──────────────────────────────────────────────────
 with timer("preprocess"):
+    milestones = adata.uns['traj_progressions']['from'].values + '->' + adata.uns['traj_progressions']['to'].values
+    for i in range(len(milestones)):
+        
+        state = milestones[i]
+        
+        if state == 'sA->sB':
+            milestones[i] = 'A'
+        
+        elif state == 'sB->sC':
+            milestones[i] = 'B'
+        
+        elif state == 'sC->sEndC':
+            milestones[i] = 'C'
+    adata.obs['milestone'] = milestones
+
+    adata.layers["spliced"] = adata.layers["counts_spliced"]
+    adata.layers["unspliced"] = adata.layers["counts_unspliced"]
+
     sc.pp.filter_cells(adata, min_counts=1)
     scv.pp.filter_and_normalize(adata, min_shared_counts=20)
     sc.pp.log1p(adata)
-    sc.pp.highly_variable_genes(adata, n_top_genes=2000, flavor="seurat", subset=True)
     sc.pp.pca(adata, n_comps=n_pcs)
     sc.pp.neighbors(adata, n_pcs=n_neighs, n_neighbors=n_neighs)
     scv.pp.moments(adata, n_neighbors=None, n_pcs=None)
@@ -66,6 +80,7 @@ with timer("evaluate"):
         embedding_key=f"X_{basis}",
         velocity_key=f"velocity_{basis}"
     )
+
 
 # ── Save ────────────────────────────────────────────────────────
 print(timer)

@@ -3,28 +3,22 @@ import scvelo as scv
 import velot
 from velot.benchmark import BenchmarkTimer, save_benchmark
 
-from scvelo.tools import flux_velocity
-
 import os
 from pathlib import Path
 os.chdir(Path(__file__).resolve().parent)
 
 # ── Config ──────────────────────────────────────────────────────
-MODEL_NAME = "flux_matching"
-DATASET_NAME = "hindbrain"
-OUTPUT_DIR = "../benchmark_results/real"
+MODEL_NAME = "scvelo_stochastic"
+DATASET_NAME = "linear"
+OUTPUT_DIR = "../benchmark_results/synthetic"
 
-basis = "umap"
-clusters_key = "Celltype"
+clusters_key = "milestone"
 n_pcs = 50
-n_neighs = 30
+n_neighs = 20
 
 edges = [
-    ('Neural stem cells', 'Proliferating VZ progenitors'),
-    ('Proliferating VZ progenitors', 'VZ progenitors'),
-    ('VZ progenitors', 'Gliogenic progenitors'),
-    ('VZ progenitors', 'Differentiating GABA interneurons'),
-    ('Differentiating GABA interneurons', 'GABA interneurons')
+    ('A', 'B'),
+    ('B', 'C')
 ]
 
 # ── Timer ───────────────────────────────────────────────────────
@@ -32,30 +26,41 @@ timer = BenchmarkTimer()
 
 # ── Load ────────────────────────────────────────────────────────
 with timer("load"):
-    adata = sc.read_h5ad("/home/user/Documents/velot/article/data/HindBrain/Hindbrain_GABA_Glio.h5ad")
+    adata = sc.read("/home/user/Documents/velot/article/data/Synthetic/synthetic_linear.h5ad")
 
 # ── Preprocess ──────────────────────────────────────────────────
 with timer("preprocess"):
-    sc.pp.filter_cells(adata, min_counts=1)
-    scv.pp.filter_and_normalize(adata, min_shared_counts=20)
+    milestones = adata.uns['traj_progressions']['from'].values + '->' + adata.uns['traj_progressions']['to'].values
+    for i in range(len(milestones)):
+        
+        state = milestones[i]
+        
+        if state == 'sA->sB':
+            milestones[i] = 'A'
+        
+        elif state == 'sB->sC':
+            milestones[i] = 'B'
+        
+        elif state == 'sC->sEndC':
+            milestones[i] = 'C'
+    adata.obs['milestone'] = milestones
+
+    adata.layers["spliced"] = adata.layers["counts_spliced"]
+    adata.layers["unspliced"] = adata.layers["counts_unspliced"]
+
+    scv.pp.filter_genes(adata, min_shared_counts=20)
+    scv.pp.normalize_per_cell(adata)
     sc.pp.log1p(adata)
-    sc.pp.highly_variable_genes(adata, n_top_genes=2000, flavor="seurat", subset=True)
+
     sc.pp.pca(adata, n_comps=n_pcs)
     sc.pp.neighbors(adata, n_pcs=n_neighs, n_neighbors=n_neighs)
-    scv.pp.moments(adata, n_neighbors=None, n_pcs=None)
-    sc.tl.umap(adata)
+    scv.pp.moments(adata, n_pcs=n_neighs, n_neighbors=n_neighs)
 
 # ── Velocity ────────────────────────────────────────────────────
 with timer("velocity"):
-    scv.tl.velocity(adata, mode="dynamical", mask_zero=False)
-    flux_velocity(
-        adata,
-        model_family="dynamical",
-        lr=1e-3,
-        epochs=100,
-    )
-    scv.tl.velocity_graph(adata, n_jobs=8)
-    scv.tl.velocity_embedding(adata, basis=basis)
+    scv.tl.velocity(adata, mode="stochastic", vkey="stocvelo", n_jobs=12)
+    scv.tl.velocity_graph(adata, vkey="stocvelo", n_jobs=12)
+    scv.tl.velocity_embedding(adata, vkey="stocvelo", basis="pca")
 
 # ── Evaluate ────────────────────────────────────────────────────
 with timer("evaluate"):
@@ -63,8 +68,8 @@ with timer("evaluate"):
         adata,
         cluster_edges=edges,
         cluster_key=clusters_key,
-        embedding_key=f"X_{basis}",
-        velocity_key=f"velocity_{basis}"
+        embedding_key="X_pca",
+        velocity_key="stocvelo_pca",
     )
 
 # ── Save ────────────────────────────────────────────────────────
@@ -80,6 +85,7 @@ save_benchmark(
         "n_cells": adata.n_obs,
         "n_genes": adata.n_vars,
         "n_pcs": n_pcs,
-        "n_neighbors": n_neighs
-    }
+        "n_neighbors": n_neighs,
+        "n_jobs": 12,
+    },
 )

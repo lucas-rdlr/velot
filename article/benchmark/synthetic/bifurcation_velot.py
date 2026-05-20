@@ -15,8 +15,8 @@ OUTPUT_DIR = "../benchmark_results/synthetic"
 basis = "pca"
 project_umap = True if basis == "pca" else False
 clusters_key = "milestone"
-n_pcs = 15
-n_neighs = 15
+n_pcs = 30
+n_neighs = 20
 
 edges = [
     ('A', 'B'),
@@ -53,6 +53,9 @@ with timer("preprocess"):
             milestones[i] = 'E'
     adata.obs['milestone'] = milestones
 
+    sc.pp.normalize_total(adata)
+    sc.pp.log1p(adata)
+
     velot.pp.pca(adata, n_pcs=n_pcs)
     sc.pp.neighbors(adata, n_neighs)
     velot.pp.pseudotime(adata, root_cluster="A", root_cell=166)
@@ -70,7 +73,7 @@ with timer("velocity"):
         overlap_fraction=0,
         tail_handling="drop", tail_threshold=20,
         # spatial_key="clusters_id",
-        reg=0.1, lambda_time=1, n_epochs=150, lambda_smooth=0.9, lambda_curl=0.9, lambda_divergence=0,
+        reg=0.1, lambda_time=1, n_epochs=150, lambda_smooth=0.5, lambda_curl=0.5, lambda_divergence=0,
         project_umap=project_umap
     )
 

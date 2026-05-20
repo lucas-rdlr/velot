@@ -14,7 +14,7 @@ MODEL_NAME = "flux_matching"
 DATASET_NAME = "murine"
 OUTPUT_DIR = "../benchmark_results/real"
 
-basis = "umap_article"
+basis = "umap"
 clusters_key = "cell_type"
 n_pcs = 50
 n_neighs = 30
