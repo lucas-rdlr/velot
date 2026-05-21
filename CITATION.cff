@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+title: "VelOT: Velocity via Optimal Transport"
+message: "If you use this software, please cite it as below."
+type: software
+authors:
+  - family-names: "Rincon de la Rosa"
+    given-names: "Lucas"
+    orcid: ""  # Add your ORCID if you have one
+repository-code: "https://github.com/lucas-rdlr/velot"
+url: "https://velot.readthedocs.io"
+license: MIT
+version: "0.1.0"
+date-released: "2025-01-01"  # Update with actual release date
+preferred-citation:
+  type: article
+  title: "VelOT: Velocity via Optimal Transport for kinetic-free RNA velocity estimation"
+  authors:
+    - family-names: "Rincon de la Rosa"
+      given-names: "Lucas"
+  journal: "bioRxiv"
+  year: 2026
+  doi: "10.1101/2025.XX.XX.XXXXXX"  # Replace with actual DOI

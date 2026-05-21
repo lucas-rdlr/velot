@@ -1,4 +1,303 @@
-=== file: __init__.py ===
+=== file: README.md ===
+# VelOT: Complete Methodology
+
+## Overview
+
+VelOT (Velocity via Optimal Transport) is a kinetic-free framework for estimating RNA velocity from single-cell transcriptomic data. Instead of modeling the molecular kinetics of transcription, splicing, and degradation, VelOT treats velocity inference as a mass transport problem in high-dimensional gene expression space. The method proceeds in four stages: (1) preprocessing and pseudotime inference, (2) spatial-temporal windowing, (3) optimal transport velocity estimation, and (4) neural velocity field smoothing. All velocity computations are performed in PCA space, with projection to UMAP only for visualization.
+
+<p align="center">
+  <img src="article/figures/figure 1/panel1.png">
+</p>
+
+---
+
+## Stage 1: Preprocessing and Pseudotime Inference
+
+### Gene expression preparation
+
+Starting from a raw gene expression count matrix $\mathbf{X}_{\text{raw}} \in \mathbb{R}^{N \times G}$, where $N$ is the number of cells and $G$ is the number of genes, we apply the following standard preprocessing steps:
+
+1. **Total-count normalization**: each cell's counts are scaled to a common total (10,000), removing library size effects.
+
+2. **Log-transformation**: $x \mapsto \log(1 + x)$, stabilizing variance and compressing the dynamic range.
+
+3. **Highly variable gene selection**: the top $G'$ genes (typically 2,000) with the highest variance-to-mean ratio are retained, removing uninformative genes that would add noise to downstream computations.
+
+4. **Scaling**: each gene is centered to zero mean and scaled to unit variance, ensuring that PCA captures correlation structure rather than being dominated by highly expressed genes.
+
+### Dimensionality reduction
+
+We compute a PCA representation of the preprocessed data:
+
+$$\mathbf{X} \in \mathbb{R}^{N \times D}$$
+
+where $D$ is the number of principal components (typically 30–50). This PCA space is where all velocity computations take place. It preserves the dominant axes of variation in gene expression while reducing noise from the remaining dimensions.
+
+A $k$-nearest neighbor (KNN) graph is constructed on the PCA coordinates, with $k$ typically set to 30. This graph captures the local manifold structure of the data and is used in three downstream steps: pseudotime computation, OT cost matrix construction, and velocity smoothing.
+
+A UMAP embedding is computed from the KNN graph for visualization purposes only. VelOT does not compute velocity in UMAP space, avoiding the information loss and geometric distortions inherent in nonlinear dimensionality reduction.
+
+### Pseudotime inference via Diffusion Pseudotime
+
+A temporal ordering of cells is established using Diffusion Pseudotime (DPT). DPT constructs a diffusion process on the KNN graph and measures the diffusion distance from a user-specified root cell to every other cell. The key properties of DPT are:
+
+- It depends only on the connectivity structure of the expression manifold, not on any velocity or kinetic model.
+- It is robust to branching, as diffusion distance naturally handles tree-like topologies.
+- It provides a global ordering that respects the intrinsic geometry of the data.
+
+The raw DPT values are normalized to the unit interval:
+
+$$\tau_i = \frac{\text{DPT}_i - \min_j \text{DPT}_j}{\max_j \text{DPT}_j - \min_j \text{DPT}_j} \in [0, 1]$$
+
+This normalization makes $\tau_i = 0$ correspond to the root (earliest) state and $\tau_i = 1$ to the most distant (latest) state.
+
+The use of DPT is a deliberate design choice to break the circularity of kinetic methods, where scVelo's dynamical mode estimates a latent time as part of the velocity model fit, creating a dependency loop between temporal ordering and velocity estimation. In VelOT, the pseudotime is fully independent of the velocity, ensuring that the temporal axis is not biased by the quantity we are trying to estimate.
+
+Alternatively, users can provide any precomputed pseudotime or temporal ordering, allowing integration with other trajectory inference methods.
+
+---
+
+## Stage 2: Spatial-Temporal Windowing
+
+### Motivation
+
+The naïve approach to OT-based velocity would sort all cells by pseudotime and compute transport between consecutive global time slices. This fails in complex biological systems where cells at different developmental stages coexist in the same spatial neighborhood. For example, in the pancreas endocrinogenesis dataset, progenitor cells and terminally differentiated cells overlap extensively in UMAP and even in PCA space. Global pseudotime windows would contain cells scattered across the entire manifold, and OT would compute transports across large distances, producing biologically nonsensical velocities.
+
+### Two-level windowing
+
+VelOT addresses this with a two-level windowing strategy that ensures OT is computed only between spatially proximate cells.
+
+**Level 1: Spatial clustering.** Cells are partitioned into $K$ spatial clusters using K-means clustering on the PCA coordinates $\mathbf{X}$. The number of clusters $K$ is chosen automatically based on dataset size (typically $K = \max(5, \min(30, N/100))$) or can be set by the user. Alternatively, if prior biological annotations are available (such as cell type labels), these can be used directly as spatial partitions. Let $\mathcal{I}_k$ denote the set of cell indices in cluster $k$.
+
+**Level 2: Local temporal windowing.** Within each spatial cluster $k$, cells are sorted by pseudotime $\tau$. A series of overlapping temporal windows is created with window size $W$ and overlap fraction $f_{\text{overlap}}$. The step size between consecutive windows is:
+
+$$S = \lfloor W \cdot (1 - f_{\text{overlap}}) \rfloor$$
+
+Window $j$ within cluster $k$ contains the cells at sorted positions $[jS, jS + W)$. Consecutive windows within the same cluster form source-target pairs:
+
+$$\text{Pairs}_k = \{(w_{k,1}, w_{k,2}), (w_{k,2}, w_{k,3}), \ldots\}$$
+
+The complete set of window pairs across all clusters is:
+
+$$\text{Pairs} = \bigcup_{k=1}^{K} \text{Pairs}_k$$
+
+### Properties of the windowing scheme
+
+This two-level strategy guarantees several desirable properties:
+
+- **Spatial locality**: OT is only computed between cells that are nearby in PCA space, preventing long-range transports across the manifold.
+- **Temporal progression**: within each spatial cluster, the window ordering follows pseudotime, ensuring that transport captures forward biological progression.
+- **Coverage**: overlapping windows mean that most cells appear as a source in multiple pairs, providing redundancy and enabling confidence estimation.
+- **Scalability**: the number of window pairs scales linearly with the number of cells, not quadratically.
+
+---
+
+## Stage 3: Optimal Transport Velocity Estimation
+
+### Transport plan computation
+
+For each source-target window pair $(w_{\text{src}}, w_{\text{tgt}})$, we compute a transport plan that optimally redistributes the mass of source cells to target cells. Let $n_s = |w_{\text{src}}|$ and $n_t = |w_{\text{tgt}}|$.
+
+We assign uniform marginals:
+
+$$\mathbf{a} = \frac{1}{n_s} \mathbf{1}_{n_s}, \qquad \mathbf{b} = \frac{1}{n_t} \mathbf{1}_{n_t}$$
+
+The transport plan $\mathbf{P}^* \in \mathbb{R}^{n_s \times n_t}$ is the solution to the entropy-regularized optimal transport problem (Sinkhorn algorithm):
+
+$$\mathbf{P}^* = \arg\min_{\mathbf{P} \in \Pi(\mathbf{a}, \mathbf{b})} \langle \mathbf{P}, \mathbf{C} \rangle_F - \varepsilon \, H(\mathbf{P})$$
+
+where $\Pi(\mathbf{a}, \mathbf{b})$ is the set of joint distributions with marginals $\mathbf{a}$ and $\mathbf{b}$, $\langle \cdot, \cdot \rangle_F$ is the Frobenius inner product, $H(\mathbf{P}) = -\sum_{ij} P_{ij} \log P_{ij}$ is the entropy of the plan, and $\varepsilon > 0$ is the regularization strength.
+
+### Structured cost matrix
+
+The cost matrix $\mathbf{C} \in \mathbb{R}^{n_s \times n_t}$ encodes three types of information about the plausibility of each cell-to-cell transport:
+
+$$C_{ij} = \underbrace{\frac{\|\mathbf{x}_i - \mathbf{x}_j\|_2^2}{C_{\max}}}_{\text{geometric distance}} + \underbrace{\lambda_t \cdot \mathbb{1}[\tau_i > \tau_j]}_{\text{pseudotime penalty}} + \underbrace{\lambda_k \cdot \mathbb{1}[j \notin \text{KNN}(i)]}_{\text{locality penalty}}$$
+
+where:
+
+- **Geometric distance**: the squared Euclidean distance in PCA space, normalized by the maximum pairwise distance $C_{\max}$ within the pair. This is the primary cost — cells that are far apart in expression space are expensive to transport.
+
+- **Pseudotime penalty** ($\lambda_t$): an additive penalty applied when the source cell has a later pseudotime than the target cell ($\tau_i > \tau_j$). This discourages backward transport, encoding the assumption that the biological process progresses forward in time. The indicator function $\mathbb{1}[\cdot]$ is 1 when the condition is true and 0 otherwise.
+
+- **KNN locality penalty** ($\lambda_k$): an additive penalty applied when the target cell $j$ is not among the $k$-nearest neighbors of the source cell $i$ in the global KNN graph. This reinforces manifold locality, preventing transport to cells that are geometrically nearby in Euclidean distance but separated along the manifold (e.g., cells on opposite sides of a fold).
+
+### Velocity extraction
+
+From the transport plan $\mathbf{P}^*$, the raw OT velocity for each source cell $i$ is computed as the expected displacement under the transport:
+
+$$\mathbf{v}_i^{\text{OT}} = \sum_{j \in w_{\text{tgt}}} \hat{P}^*_{ij} \left(\mathbf{x}_j - \mathbf{x}_i\right)$$
+
+where $\hat{P}^*_{ij}$ is the row-normalized transport plan:
+
+$$\hat{P}^*_{ij} = \frac{P^*_{ij}}{\sum_{j} P^*_{ij}}$$
+
+This normalization ensures that each source cell's velocity is a proper weighted average of displacements to target cells, independent of the total mass transported.
+
+### Aggregation across windows
+
+A cell may appear as a source in multiple window pairs (due to overlap between consecutive windows and membership in a spatial cluster). The final raw velocity for cell $i$ is the average across all contributing pairs:
+
+$$\mathbf{v}_i = \frac{1}{|\mathcal{W}_i|} \sum_{p \in \mathcal{W}_i} \mathbf{v}_i^{(p)}$$
+
+where $\mathcal{W}_i$ is the set of window pairs in which cell $i$ served as a source, and $\mathbf{v}_i^{(p)}$ is the velocity from pair $p$.
+
+### Confidence estimation
+
+A confidence score is computed for each cell based on the number of window pairs that contributed to its velocity:
+
+$$c_i = \frac{|\mathcal{W}_i|}{\max_j |\mathcal{W}_j|}$$
+
+Cells with high confidence ($c_i \approx 1$) have velocity estimates supported by multiple overlapping windows and are therefore more reliable. Cells with zero confidence ($c_i = 0$) were not included as a source in any window pair — their velocity will be entirely interpolated by the smoothing stage.
+
+### Safety mechanisms
+
+Two additional safety mechanisms are applied during OT velocity computation:
+
+- **Dead-end detection**: if a source cell has no KNN neighbors in the target window (the local adjacency submatrix has a zero row), its velocity is set to zero. This prevents cells at the boundary of a trajectory from acquiring spurious velocities pointing to distant, unrelated cells.
+
+- **Sinkhorn fallback**: if the Sinkhorn algorithm fails to converge (which can happen with poorly conditioned cost matrices), the computation falls back to the exact OT solution via the Earth Mover's Distance (EMD). If both fail, the pair contributes zero velocity.
+
+---
+
+## Stage 4: Neural Velocity Field Smoothing
+
+### Motivation
+
+The raw OT velocity field has three limitations that motivate a smoothing step:
+
+1. **Discreteness**: velocity is defined only at cell positions, not as a continuous field. It cannot be evaluated at arbitrary points in expression space.
+
+2. **Noise**: individual transport plans are subject to statistical noise from finite sample sizes within windows. Cells near the edge of windows may have velocity estimates based on few transport connections.
+
+3. **Gaps**: cells that were not included as a source in any window pair (typically those at the end of the pseudotime range or in very small spatial clusters) have no OT velocity estimate at all.
+
+### Network architecture
+
+A small multi-layer perceptron (MLP) $f_\theta$ is trained to learn a smooth, continuous velocity function over the entire expression space. The network takes as input the concatenation of a cell's PCA coordinates and pseudotime, and outputs a predicted velocity vector:
+
+$$\hat{\mathbf{v}}_i = f_\theta(\mathbf{x}_i, \tau_i) : \mathbb{R}^{D+1} \to \mathbb{R}^D$$
+
+The architecture consists of two hidden layers with SiLU (Sigmoid Linear Unit) activation functions:
+
+$$f_\theta(\mathbf{x}, \tau) = \mathbf{W}_3 \, \sigma(\mathbf{W}_2 \, \sigma(\mathbf{W}_1 [\mathbf{x}; \tau] + \mathbf{b}_1) + \mathbf{b}_2) + \mathbf{b}_3$$
+
+where $[\mathbf{x}; \tau]$ denotes concatenation, $\sigma$ is the SiLU activation, and $\{\mathbf{W}_l, \mathbf{b}_l\}$ are learnable weight matrices and bias vectors. The hidden dimension is typically 128.
+
+The inclusion of pseudotime $\tau_i$ as an input feature is critical: it allows the network to predict different velocities for cells that occupy the same spatial position in PCA space but are at different stages of the biological process. This directly addresses the temporal mixing problem that plagues methods operating in reduced-dimensional spaces.
+
+### Loss function
+
+The network is trained by minimizing a composite loss with two terms:
+
+$$\mathcal{L}(\theta) = \mathcal{L}_{\text{reg}} + \lambda_s \cdot \mathcal{L}_{\text{smooth}}$$
+
+**Regression loss** (data fidelity): the network's prediction should match the raw OT velocity where it is available, weighted by the confidence score:
+
+$$\mathcal{L}_{\text{reg}} = \frac{\sum_{i=1}^{N} c_i \cdot \|f_\theta(\mathbf{x}_i, \tau_i) - \mathbf{v}_i^{\text{OT}}\|_2^2}{\sum_{i=1}^{N} c_i}$$
+
+The confidence weighting ensures that cells with reliable OT estimates (covered by many windows) contribute more to the regression target than cells with uncertain estimates (covered by few windows). Cells with $c_i = 0$ contribute nothing to this term.
+
+**Smoothness loss** (spatial coherence): the predicted velocity at each cell should be consistent with the predictions at its $K$ nearest neighbors:
+
+$$\mathcal{L}_{\text{smooth}} = \frac{1}{NK} \sum_{i=1}^{N} \sum_{j \in \text{KNN}(i)} \|f_\theta(\mathbf{x}_i, \tau_i) - f_\theta(\mathbf{x}_j, \tau_j)\|_2^2$$
+
+This term enforces local coherence of the velocity field, penalizing rapid changes between neighboring cells. For zero-confidence cells, this is the only term that influences their predicted velocity, effectively interpolating from the learned field of their neighbors.
+
+The balance between data fidelity and smoothness is controlled by $\lambda_s$ (typically 0.1–1.0). Higher values produce smoother fields at the cost of less fidelity to the raw OT estimates. Lower values preserve the OT structure but may retain noise.
+
+### Training procedure
+
+The network is trained using the Adam optimizer with cosine annealing learning rate schedule for 100–300 epochs. Each epoch samples a minibatch of cells, computes both losses jointly (the batch cells and all their KNN neighbors are passed through the network in a single forward pass for efficiency), and updates the weights via backpropagation.
+
+After training, the smoothed velocity is extracted for all cells by evaluating $f_\theta$ at each cell's coordinates. The raw OT velocity is preserved as a backup for comparison.
+
+### Relationship to flow matching
+
+The smoothing step is conceptually related to flow matching methods, where a neural network learns a vector field that transports between distributions. In classical conditional flow matching, the network is supervised by displacement vectors between OT-coupled sample pairs drawn from source and target distributions. In VelOT's smoothing, the OT displacement vectors serve an analogous supervisory role — they define the target velocity that the network should approximate. The smoothness constraint plays the role of a regularizer that ensures the learned field is physically plausible (locally coherent), similar to the continuity constraints in flow-based generative models.
+
+However, VelOT's smoothing is deliberately simpler than full conditional flow matching. There is no base distribution, no flow time parameter $t \in [0, 1]$, and no ODE integration during training. The network simply learns a spatial mapping from coordinates to velocity vectors. This simplicity is a feature: it avoids the complexity and potential instability of training normalizing flows while still producing a smooth, continuous velocity field.
+
+---
+
+## Stage 5: Velocity Projection to UMAP
+
+The velocity field is computed and stored in $D$-dimensional PCA space, where the geometric structure of the data is most faithfully represented. For visualization in 2D UMAP coordinates, a local linear projection is applied.
+
+For each cell $i$, the Jacobian of the PCA-to-UMAP mapping is estimated from its $K$ nearest neighbors by solving the least-squares problem:
+
+$$\mathbf{A}_i = \arg\min_{\mathbf{A}} \|\Delta\mathbf{U}_i - \Delta\mathbf{X}_i \mathbf{A}\|_F^2$$
+
+where $\Delta\mathbf{X}_i \in \mathbb{R}^{K \times D}$ is the matrix of PCA displacements from cell $i$ to its neighbors, and $\Delta\mathbf{U}_i \in \mathbb{R}^{K \times 2}$ is the corresponding matrix of UMAP displacements. The solution is:
+
+$$\mathbf{A}_i = (\Delta\mathbf{X}_i^\top \Delta\mathbf{X}_i)^{-1} \Delta\mathbf{X}_i^\top \Delta\mathbf{U}_i$$
+
+The UMAP velocity is then:
+
+$$\mathbf{v}_i^{\text{UMAP}} = \mathbf{v}_i^{\text{PCA}} \cdot \mathbf{A}_i$$
+
+This local linear approximation respects the nonlinear geometry of the UMAP embedding by estimating a different Jacobian at each point, rather than applying a single global transformation. It preserves directional information more faithfully than alternatives such as applying UMAP to displaced coordinates, which would introduce distortions from the nonlinear projection.
+
+---
+
+## Summary of Notation
+
+| Symbol | Description |
+|--------|-------------|
+| $N$ | Number of cells |
+| $G$ | Number of genes |
+| $D$ | Number of PCA components |
+| $\mathbf{X} \in \mathbb{R}^{N \times D}$ | Cell coordinates in PCA space |
+| $\tau_i \in [0, 1]$ | Pseudotime of cell $i$ (from DPT) |
+| $K$ | Number of spatial clusters |
+| $W$ | Window size (cells per window) |
+| $f_{\text{overlap}}$ | Overlap fraction between consecutive windows |
+| $\mathbf{P}^* \in \mathbb{R}^{n_s \times n_t}$ | Optimal transport plan |
+| $\mathbf{C} \in \mathbb{R}^{n_s \times n_t}$ | Cost matrix |
+| $\varepsilon$ | Sinkhorn entropy regularization |
+| $\lambda_t$ | Pseudotime backward penalty |
+| $\lambda_k$ | KNN locality penalty |
+| $\mathbf{v}_i^{\text{OT}} \in \mathbb{R}^D$ | Raw OT velocity of cell $i$ |
+| $c_i \in [0, 1]$ | Confidence score of cell $i$ |
+| $f_\theta$ | Neural network velocity function |
+| $\lambda_s$ | Smoothness regularization weight |
+| $\mathbf{v}_i^{\text{UMAP}} \in \mathbb{R}^2$ | UMAP-projected velocity for visualization |
+
+---
+
+=== file: pyproject.toml ===
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "velot"
+version = "0.1.0"
+description = "Optimal Transport RNA Velocity with Flow Matching Smoothing"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.21",
+    "scipy>=1.7",
+    "pandas>=1.3",
+    "anndata>=0.8",
+    "scanpy>=1.9",
+    "scikit-learn>=1.0",
+    "matplotlib>=3.5",
+    "POT>=0.8",
+    "scvelo>=0.2.4",
+    "tqdm>=4.60",
+    "ipywidgets"
+]
+
+[project.optional-dependencies]
+plot = ["seaborn>=0.11"]
+
+[tool.setuptools.packages.find]
+include = ["velot*"]
+
+=== file: velot/__init__.py ===
 """
 VelOT — Optimal Transport RNA Velocity with Flow Matching Smoothing.
 
@@ -21,7 +320,2349 @@ __version__ = "0.1.0"
 
 __all__ = ["pp", "tl", "pl", "metrics", "datasets"]
 
-=== file: datasets.py ===
+=== file: velot/benchmark.py ===
+import os
+from pathlib import Path
+import json
+import time
+from datetime import datetime
+from typing import Optional, Dict, List, Any
+
+import numpy as np
+import pandas as pd
+from scipy.stats import mannwhitneyu
+
+import matplotlib.pyplot as plt
+
+
+class BenchmarkTimer:
+    """Context manager to time pipeline stages."""
+
+    def __init__(self):
+        self.stages: Dict[str, float] = {}
+        self._current_stage: Optional[str] = None
+        self._start_time: Optional[float] = None
+        self._total_start: Optional[float] = None
+        self._total_end: Optional[float] = None
+
+    def start(self, stage: str):
+        self._current_stage = stage
+        self._start_time = time.perf_counter()
+        if self._total_start is None:
+            self._total_start = self._start_time
+
+    def stop(self):
+        if self._current_stage is None:
+            return
+        elapsed = time.perf_counter() - self._start_time
+        self.stages[self._current_stage] = elapsed
+        self._total_end = time.perf_counter()
+        self._current_stage = None
+
+    def __call__(self, stage: str):
+        return _TimerContext(self, stage)
+
+    @property
+    def total(self) -> float:
+        if self._total_start is None:
+            return 0.0
+        end = self._total_end or time.perf_counter()
+        return end - self._total_start
+
+    def summary(self) -> Dict[str, float]:
+        result = dict(self.stages)
+        result["total"] = self.total
+        return result
+
+    def __repr__(self):
+        lines = [f"  {k}: {v:.2f}s" for k, v in self.stages.items()]
+        lines.append(f"  total: {self.total:.2f}s")
+        return "BenchmarkTimer(\n" + "\n".join(lines) + "\n)"
+
+
+class _TimerContext:
+    def __init__(self, timer: BenchmarkTimer, stage: str):
+        self.timer = timer
+        self.stage = stage
+
+    def __enter__(self):
+        self.timer.start(self.stage)
+        return self.timer
+
+    def __exit__(self, *args):
+        self.timer.stop()
+
+
+def save_benchmark(
+    results: Dict[str, Any],
+    timer: BenchmarkTimer,
+    model_name: str,
+    dataset_name: str,
+    output_dir: str = "benchmark_results",
+    extra_info: Optional[Dict] = None,
+) -> str:
+    """
+    Save benchmark results for one (model, dataset) run.
+
+    Parameters
+    ----------
+    results
+        Output of ``velot.metrics.summary()``.
+    timer
+        BenchmarkTimer with timing information.
+    model_name
+        Name of the model (e.g., ``"scvelo_dynamical"``, ``"velot"``).
+    dataset_name
+        Name of the dataset (e.g., ``"pancreas"``).
+    output_dir
+        Directory to save results.
+    extra_info
+        Any additional metadata.
+
+    Returns
+    -------
+    Path to the saved JSON file.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    record = {
+        "model": model_name,
+        "dataset": dataset_name,
+        "timestamp": datetime.now().isoformat(),
+        "timing": timer.summary(),
+        "extra": extra_info or {},
+        "metrics": _to_serializable(results),
+    }
+
+    filename = f"{model_name}_{dataset_name}.json"
+    filepath = os.path.join(output_dir, filename)
+    with open(filepath, "w") as f:
+        json.dump(record, f, indent=2)
+
+    print(f"  Saved: {filepath}")
+    return filepath
+
+
+def load_benchmarks(
+    output_dir: str = "benchmark_results",
+    models: Optional[List[str]] = None,
+    datasets: Optional[List[str]] = None,
+) -> pd.DataFrame:
+    """
+    Load benchmark summaries: one row per (model, dataset).
+
+    Extracts scalar metrics (``*_mean``) and timing information.
+
+    Returns
+    -------
+    DataFrame with columns: model, dataset, time_*, metric_mean, ...
+    """
+    records = []
+
+    for filepath in sorted(Path(output_dir).glob("*.json")):
+        with open(filepath) as f:
+            data = json.load(f)
+
+        if models and data["model"] not in models:
+            continue
+        if datasets and data["dataset"] not in datasets:
+            continue
+
+        row = {
+            "model": data["model"],
+            "dataset": data["dataset"],
+            "timestamp": data["timestamp"],
+        }
+
+        # Timing
+        for stage, seconds in data.get("timing", {}).items():
+            row[f"time_{stage}"] = seconds
+
+        # Extra info
+        for k, v in data.get("extra", {}).items():
+            if isinstance(v, (int, float)):
+                row[k] = v
+
+        # Scalar metrics (e.g., iccoh_mean, cbdir_mean)
+        metrics = data.get("metrics", {})
+        for k, v in metrics.items():
+            if isinstance(v, (int, float)):
+                row[k] = v
+
+        records.append(row)
+
+    df = pd.DataFrame(records)
+    if len(df) > 0:
+        df = df.sort_values(["dataset", "model"]).reset_index(drop=True)
+    return df
+
+
+def load_benchmarks_per_group(
+    output_dir: str = "benchmark_results",
+    models: Optional[List[str]] = None,
+    datasets: Optional[List[str]] = None,
+    metric: Optional[str] = None,
+) -> pd.DataFrame:
+    """
+    Load per-cell metric values for boxplots.
+
+    Parses the nested structure in the JSON where each metric
+    (e.g., ``"cbdir"``, ``"iccoh"``) contains a dict of
+    group → array-of-values. Groups can be edges
+    (``"Fev+ → Alpha"``) or clusters (``"Alpha"``).
+
+    Parameters
+    ----------
+    output_dir
+        Directory containing JSON result files.
+    models
+        Filter to specific models. None for all.
+    datasets
+        Filter to specific datasets. None for all.
+    metric
+        Specific metric to load (e.g., ``"cbdir"``). If None,
+        loads all metrics that contain per-cell arrays.
+
+    Returns
+    -------
+    Long-format DataFrame with columns:
+        model, dataset, metric, group, value
+
+    Each row is one cell's value for one (model, dataset, metric, group).
+    """
+    records = []
+
+    for filepath in sorted(Path(output_dir).glob("*.json")):
+        with open(filepath) as f:
+            data = json.load(f)
+
+        if models and data["model"] not in models:
+            continue
+        if datasets and data["dataset"] not in datasets:
+            continue
+
+        model = data["model"]
+        dataset = data["dataset"]
+        metrics = data.get("metrics", {})
+
+        for metric_name, metric_val in metrics.items():
+            # Skip scalars (like iccoh_mean) — we want the dicts of arrays
+            if not isinstance(metric_val, dict):
+                continue
+
+            # Skip if a specific metric was requested and this isn't it
+            if metric is not None and metric_name != metric:
+                continue
+
+            # metric_val is like {"Alpha": [0.6, 0.8, ...], "Beta": [...]}
+            for group_name, values in metric_val.items():
+                if not isinstance(values, list):
+                    continue
+
+                for v in values:
+                    if isinstance(v, (int, float)) and not np.isnan(v):
+                        records.append({
+                            "model": model,
+                            "dataset": dataset,
+                            "metric": metric_name,
+                            "group": group_name,
+                            "value": float(v),
+                        })
+
+    df = pd.DataFrame(records)
+    if len(df) > 0:
+        df = df.sort_values(
+            ["dataset", "metric", "model", "group"]
+        ).reset_index(drop=True)
+    return df
+
+
+def load_benchmarks_per_group_summary(
+    output_dir: str = "benchmark_results",
+    models: Optional[List[str]] = None,
+    datasets: Optional[List[str]] = None,
+) -> pd.DataFrame:
+    """
+    Load one row per (model, dataset, metric, group) with summary stats.
+
+    Useful for bar charts or compact comparisons where per-cell
+    resolution is not needed.
+
+    Returns
+    -------
+    DataFrame with columns:
+        model, dataset, metric, group, mean, median, std, n
+    """
+    records = []
+
+    for filepath in sorted(Path(output_dir).glob("*.json")):
+        with open(filepath) as f:
+            data = json.load(f)
+
+        if models and data["model"] not in models:
+            continue
+        if datasets and data["dataset"] not in datasets:
+            continue
+
+        model = data["model"]
+        dataset = data["dataset"]
+        metrics = data.get("metrics", {})
+
+        for metric_name, metric_val in metrics.items():
+            if not isinstance(metric_val, dict):
+                continue
+
+            for group_name, values in metric_val.items():
+                if not isinstance(values, list) or len(values) == 0:
+                    continue
+
+                arr = np.array([v for v in values if isinstance(v, (int, float))])
+                if len(arr) == 0:
+                    continue
+
+                records.append({
+                    "model": model,
+                    "dataset": dataset,
+                    "metric": metric_name,
+                    "group": group_name,
+                    "mean": float(np.nanmean(arr)),
+                    "median": float(np.nanmedian(arr)),
+                    "std": float(np.nanstd(arr)),
+                    "n": int(np.sum(~np.isnan(arr))),
+                })
+
+    df = pd.DataFrame(records)
+    if len(df) > 0:
+        df = df.sort_values(
+            ["dataset", "metric", "model", "group"]
+        ).reset_index(drop=True)
+    return df
+
+
+def _to_serializable(obj):
+    """Convert numpy types and tuple keys to JSON-compatible types."""
+    if isinstance(obj, dict):
+        return {
+            _key_to_str(k): _to_serializable(v)
+            for k, v in obj.items()
+        }
+    elif isinstance(obj, (list, tuple)):
+        return [_to_serializable(v) for v in obj]
+    elif isinstance(obj, (np.integer,)):
+        return int(obj)
+    elif isinstance(obj, (np.floating,)):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, (np.bool_,)):
+        return bool(obj)
+    return obj
+
+
+def _key_to_str(key):
+    """Convert dictionary keys to JSON-safe strings."""
+    if isinstance(key, tuple):
+        return " → ".join(str(k) for k in key)
+    return str(key)
+
+
+def _significance_str(pval):
+    """Convert p-value to significance annotation string."""
+    if pval is None or np.isnan(pval):
+        return ""
+    if pval > 0.05:
+        return "ns"
+    elif pval > 0.01:
+        return "*"
+    elif pval > 0.001:
+        return "**"
+    elif pval > 0.0001:
+        return "***"
+    else:
+        return "****"
+
+
+def _draw_significance(
+    ax,
+    model_positions,
+    reference_model,
+    fontsize=9,
+    min_samples=5,
+):
+    """
+    Draw significance brackets from reference_model to each other model.
+
+    Parameters
+    ----------
+    ax
+        Matplotlib Axes.
+    model_positions
+        Dict of ``{model_name: (x_position, data_array)}``.
+    reference_model
+        Name of the reference model to compare against.
+    fontsize
+        Font size for the significance text.
+    min_samples
+        Minimum number of data points required in both groups
+        to perform the test.
+
+    Returns
+    -------
+    Maximum y coordinate used by brackets (for axis limit adjustment).
+    """
+    if reference_model not in model_positions:
+        return None
+
+    ref_pos, ref_data = model_positions[reference_model]
+    if len(ref_data) < min_samples:
+        return None
+
+    # Collect all visible data to determine bracket placement
+    all_visible = []
+    for _, (_, d) in model_positions.items():
+        if len(d) > 0:
+            # Match boxplot whiskers (showfliers=False):
+            # upper whisker = min(max, Q3 + 1.5*IQR)
+            q1, q3 = np.percentile(d, [25, 75])
+            iqr = q3 - q1
+            upper_whisker = min(np.max(d), q3 + 1.5 * iqr)
+            all_visible.append(upper_whisker)
+
+    if not all_visible:
+        return None
+
+    y_top = max(all_visible)
+    y_min = ax.get_ylim()[0]
+    y_range = y_top - y_min if y_top > y_min else 1.0
+
+    h = y_range * 0.03       # bracket tick height
+    gap = y_range * 0.06     # vertical gap between stacked brackets
+    margin = y_range * 0.08  # initial margin above data
+
+    max_y = y_top
+    bracket_idx = 0
+
+    # Sort other models by position so brackets don't cross
+    others = sorted(
+        [
+            (model, pos, data)
+            for model, (pos, data) in model_positions.items()
+            if model != reference_model and len(data) >= min_samples
+        ],
+        key=lambda x: abs(x[1] - ref_pos),
+    )
+
+    for model, other_pos, other_data in others:
+        # Mann-Whitney U test (two-sided)
+        try:
+            _, pval = mannwhitneyu(
+                ref_data, other_data, alternative="two-sided"
+            )
+        except ValueError:
+            continue
+
+        sig_str = _significance_str(pval)
+
+        # Bracket y position
+        y_bar = y_top + margin + bracket_idx * gap
+
+        # Draw bracket: two ticks and a horizontal bar
+        left = min(ref_pos, other_pos)
+        right = max(ref_pos, other_pos)
+
+        ax.plot(
+            [left, left, right, right],
+            [y_bar - h, y_bar, y_bar, y_bar - h],
+            lw=0.8,
+            color="black",
+            clip_on=False,
+        )
+
+        # Significance text
+        color = "black" if sig_str == "ns" else "black"
+        weight = "normal" if sig_str == "ns" else "bold"
+        ax.text(
+            (left + right) / 2,
+            y_bar + h * 0.3,
+            sig_str,
+            ha="center",
+            va="bottom",
+            fontsize=fontsize,
+            color=color,
+            fontweight=weight,
+        )
+
+        max_y = max(max_y, y_bar + h * 2)
+        bracket_idx += 1
+
+    # Expand y-axis to fit brackets
+    if bracket_idx > 0:
+        current_ylim = ax.get_ylim()
+        ax.set_ylim(current_ylim[0], max_y + y_range * 0.05)
+
+    return max_y
+
+def _plot_aggregated(ax, df_m, all_models, model_colors, reference_model=None):
+    """
+    One boxplot per model, pooling all groups and datasets.
+    """
+    model_positions = {}
+
+    for m_idx, model in enumerate(all_models):
+        data = df_m.loc[df_m["model"] == model, "value"].dropna().values
+
+        if len(data) == 0:
+            continue
+
+        bp = ax.boxplot(
+            [data],
+            positions=[m_idx],
+            widths=0.6,
+            patch_artist=True,
+            showfliers=False,
+            medianprops=dict(color="black", linewidth=1.5),
+        )
+        bp["boxes"][0].set_facecolor(model_colors[model])
+        bp["boxes"][0].set_alpha(0.7)
+
+        _overlay_points(ax, data, m_idx, model_colors[model])
+        model_positions[model] = (m_idx, data)
+
+    ax.set_xticks(range(len(all_models)))
+    ax.set_xticklabels(all_models, rotation=30, ha="right", fontsize=9)
+
+    # Significance brackets
+    if reference_model is not None:
+        _draw_significance(ax, model_positions, reference_model, fontsize=10)
+
+
+def _plot_per_dataset(ax, df_m, all_models, model_colors, datasets_order=None, reference_model=None):
+    """
+    Grouped by dataset, one boxplot per model within each group.
+    """
+    if datasets_order is not None:
+        dataset_list = datasets_order
+    else:
+        dataset_list = df_m["dataset"].unique()
+
+    n_models = len(all_models)
+    group_width = n_models + 1.5
+
+    tick_positions = []
+    tick_labels = []
+
+    # Collect positions per dataset for significance testing
+    dataset_model_positions = {ds: {} for ds in dataset_list}
+
+    for d_idx, dataset in enumerate(dataset_list):
+        base_pos = d_idx * group_width
+        df_d = df_m[df_m["dataset"] == dataset]
+
+        for m_idx, model in enumerate(all_models):
+            data = df_d.loc[
+                df_d["model"] == model, "value"
+            ].dropna().values
+
+            if len(data) == 0:
+                continue
+
+            pos = base_pos + m_idx
+            bp = ax.boxplot(
+                [data],
+                positions=[pos],
+                widths=0.6,
+                patch_artist=True,
+                showfliers=False,
+                medianprops=dict(color="black", linewidth=1.5),
+            )
+            bp["boxes"][0].set_facecolor(model_colors[model])
+            bp["boxes"][0].set_alpha(0.7)
+
+            _overlay_points(ax, data, pos, model_colors[model])
+            dataset_model_positions[dataset][model] = (pos, data)
+
+        tick_positions.append(base_pos + (n_models - 1) / 2)
+        tick_labels.append(dataset)
+
+    ax.set_xticks(tick_positions)
+    ax.set_xticklabels(tick_labels, rotation=30, ha="right", fontsize=9)
+
+    # Vertical separators between datasets
+    for d_idx in range(1, len(dataset_list)):
+        sep_x = d_idx * group_width - group_width / 2 + (n_models - 1) / 2
+        ax.axvline(
+            sep_x, color="gray", linewidth=0.5, linestyle="--", alpha=0.5
+        )
+
+    # Significance brackets per dataset
+    if reference_model is not None:
+        for dataset in dataset_list:
+            _draw_significance(
+                ax,
+                dataset_model_positions[dataset],
+                reference_model,
+                fontsize=9,
+            )
+
+
+def _plot_per_group(ax, df_m, all_models, model_colors, reference_model=None):
+    """
+    Full detail: one boxplot per (model, group), organized by dataset.
+    """
+    dataset_list = df_m["dataset"].unique()
+    n_models = len(all_models)
+    model_width = 1.0
+    group_gap = 1.5
+    dataset_gap = 3.0
+
+    current_pos = 0.0
+    tick_positions = []
+    tick_labels = []
+    dataset_centers = []
+    dataset_boundaries = []
+
+    # Collect positions per (dataset, group) for significance
+    group_model_positions = {}
+
+    for d_idx, dataset in enumerate(dataset_list):
+        df_d = df_m[df_m["dataset"] == dataset]
+        groups = df_d["group"].unique()
+
+        if d_idx > 0:
+            dataset_boundaries.append(current_pos - dataset_gap / 2)
+            current_pos += dataset_gap
+
+        dataset_start = current_pos
+
+        for g_idx, group in enumerate(groups):
+            if g_idx > 0:
+                current_pos += group_gap
+
+            group_start = current_pos
+            group_key = (dataset, group)
+            group_model_positions[group_key] = {}
+
+            for m_idx, model in enumerate(all_models):
+                data = df_d.loc[
+                    (df_d["group"] == group) & (df_d["model"] == model),
+                    "value",
+                ].dropna().values
+
+                pos = current_pos
+
+                if len(data) > 0:
+                    bp = ax.boxplot(
+                        [data],
+                        positions=[pos],
+                        widths=0.7,
+                        patch_artist=True,
+                        showfliers=False,
+                        medianprops=dict(color="black", linewidth=1.5),
+                    )
+                    bp["boxes"][0].set_facecolor(model_colors[model])
+                    bp["boxes"][0].set_alpha(0.7)
+
+                    group_model_positions[group_key][model] = (pos, data)
+
+                current_pos += model_width
+
+            # Group label
+            group_center = (group_start + current_pos - model_width) / 2
+            label = group
+            if " → " in label:
+                parts = label.split(" → ")
+                label = "→".join(parts)
+            tick_positions.append(group_center)
+            tick_labels.append(label)
+
+        dataset_end = current_pos - model_width
+        dataset_centers.append((dataset_start + dataset_end) / 2)
+
+    ax.set_xticks(tick_positions)
+    ax.set_xticklabels(tick_labels, rotation=45, ha="right", fontsize=7)
+
+    # Dataset separators
+    for boundary in dataset_boundaries:
+        ax.axvline(
+            boundary, color="black", linewidth=1.0, linestyle="-", alpha=0.4
+        )
+
+    # Dataset names
+    y_min, y_max = ax.get_ylim()
+    for center, dataset in zip(dataset_centers, dataset_list):
+        ax.text(
+            center,
+            y_min - (y_max - y_min) * 0.15,
+            dataset,
+            ha="center",
+            va="top",
+            fontsize=9,
+            fontweight="bold",
+            transform=ax.transData,
+        )
+
+    # Significance brackets per group
+    if reference_model is not None:
+        for group_key, model_pos in group_model_positions.items():
+            _draw_significance(
+                ax,
+                model_pos,
+                reference_model,
+                fontsize=7,
+            )
+
+
+def benchmark_comparison(
+    output_dir: str = "benchmark_results",
+    models: Optional[List[str]] = None,
+    models_order: Optional[List[str]] = None,
+    datasets: Optional[List[str]] = None,
+    datasets_order: Optional[List[str]] = None,
+    metrics: Optional[List[str]] = None,
+    detail: str = "aggregated",
+    reference_model: Optional[str] = "velot",
+    show_significance: bool = True,
+    show_timing: bool = True,
+    figsize_per_panel: tuple = (5, 4),
+    show: bool = True,
+    save: Optional[str] = None,
+) -> plt.Figure:
+    """
+    Compare benchmark results across models and datasets.
+
+    Parameters
+    ----------
+    output_dir
+        Directory with saved JSON benchmark files.
+    models
+        Which models to include. None for all.
+    datasets
+        Which datasets to include. None for all.
+    metrics
+        Which metrics to plot (e.g., ``["cbdir", "iccoh"]``).
+        None to auto-detect all metrics with per-cell data.
+    detail
+        Level of detail for the metric panels:
+
+        - ``"aggregated"`` (default): one boxplot per model, pooling
+          all groups and all datasets.
+        - ``"per_dataset"``: one boxplot per (model, dataset),
+          grouped by dataset, colored by model.
+        - ``"per_group"``: one boxplot per (model, dataset, group),
+          every edge/cluster visible, organized by dataset.
+    reference_model
+        Model to compare others against for significance testing.
+        Set to None to disable significance brackets entirely.
+    show_significance
+        Whether to draw significance brackets. Only applies when
+        ``reference_model`` is not None.
+    show_timing
+        Whether to include a timing comparison panel.
+    figsize_per_panel
+        Size of each subplot.
+    show
+        Display the plot.
+    save
+        Path to save.
+
+    Returns
+    -------
+    matplotlib Figure.
+
+    Examples
+    --------
+    Default — pooled, with significance vs velot::
+
+        velot.pl.benchmark_comparison("benchmark_results")
+
+    Without significance::
+
+        velot.pl.benchmark_comparison(
+            "benchmark_results", show_significance=False,
+        )
+
+    Compare against a different reference::
+
+        velot.pl.benchmark_comparison(
+            "benchmark_results", reference_model="scvelo_dynamical",
+        )
+
+    Per dataset::
+
+        velot.pl.benchmark_comparison(
+            "benchmark_results", detail="per_dataset",
+        )
+
+    Full detail::
+
+        velot.pl.benchmark_comparison(
+            "benchmark_results", detail="per_group",
+            figsize_per_panel=(12, 4),
+        )
+    """
+
+    if detail not in ("aggregated", "per_dataset", "per_group"):
+        raise ValueError(
+            f"detail must be 'aggregated', 'per_dataset', or "
+            f"'per_group', got '{detail}'."
+        )
+
+    df_summary = load_benchmarks(output_dir, models, datasets)
+    df_cells = load_benchmarks_per_group(output_dir, models, datasets)
+
+    if len(df_summary) == 0:
+        raise ValueError(f"No benchmark results found in '{output_dir}'.")
+
+    # Resolve reference model
+    ref = None
+    if show_significance and reference_model is not None:
+        available_models = df_summary["model"].unique()
+        if reference_model in available_models:
+            ref = reference_model
+        else:
+            import warnings
+            warnings.warn(
+                f"Reference model '{reference_model}' not found in results. "
+                f"Available: {list(available_models)}. "
+                f"Significance brackets disabled.",
+                UserWarning,
+            )
+
+    # Auto-detect metrics
+    if metrics is None:
+        if len(df_cells) > 0:
+            metrics = sorted(df_cells["metric"].unique().tolist())
+        else:
+            metrics = []
+
+    n_metric_panels = len(metrics)
+    n_panels = n_metric_panels + (1 if show_timing else 0)
+
+    if n_panels == 0:
+        raise ValueError("No metrics or timing data to plot.")
+
+    fig, axes = plt.subplots(
+        1,
+        n_panels,
+        figsize=(figsize_per_panel[0] * n_panels, figsize_per_panel[1]),
+        squeeze=False,
+    )
+    axes = axes.flatten()
+
+    if models_order is not None:
+        all_models = models_order
+    else:
+        all_models = df_summary["model"].unique()
+    n_models = len(all_models)
+
+    cmap = plt.get_cmap("Set2")
+    colors = [
+        cmap(0),
+        cmap(1),
+        cmap(2),
+        cmap(3),
+        cmap(5)
+    ]
+    # colors = plt.cm.Set2(np.linspace(0, 1, max(n_models, 1)))
+    model_colors = dict(zip(all_models, colors))
+
+    # ── Metric panels ───────────────────────────────────────────
+    for i, metric_name in enumerate(metrics):
+        ax = axes[i]
+        df_m = df_cells[df_cells["metric"] == metric_name]
+
+        if len(df_m) == 0:
+            ax.set_title(f"{metric_name}\n(no data)")
+            continue
+
+        if detail == "aggregated":
+            _plot_aggregated(ax, df_m, all_models, model_colors, ref)
+        elif detail == "per_dataset":
+            _plot_per_dataset(ax, df_m, all_models, model_colors, datasets_order, ref)
+        elif detail == "per_group":
+            _plot_per_group(ax, df_m, all_models, model_colors, ref)
+
+        ax.set_title(metric_name.upper(), fontsize=12, fontweight="bold")
+        ax.set_ylabel(metric_name)
+        ax.grid(axis="y", alpha=0.3)
+
+    # ── Timing ──────────────────────────────────────────────────
+    if show_timing and "time_total" in df_summary.columns:
+        ax = axes[n_metric_panels]
+        _plot_timing(ax, df_summary, all_models, model_colors, datasets_order)
+
+    # ── Legend ──────────────────────────────────────────────────
+    handles = [
+        plt.Rectangle(
+            (0, 0), 1, 1,
+            facecolor=model_colors[m],
+            edgecolor="black",
+            alpha=0.7,
+        )
+        for m in all_models
+    ]
+    labels = list(all_models)
+
+    # Mark reference model in legend
+    if ref is not None:
+        labels = [
+            f"{m} (ref)" if m == ref else m for m in all_models
+        ]
+
+    fig.legend(
+        handles,
+        labels,
+        loc="upper center",
+        ncol=min(len(all_models), 6),
+        fontsize=10,
+        frameon=False,
+        bbox_to_anchor=(0.5, 1.02),
+    )
+
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+
+    if save:
+        os.makedirs(os.path.dirname(save) or ".", exist_ok=True)
+        fig.savefig(save, dpi=150, bbox_inches="tight")
+    if show:
+        plt.show()
+
+    return fig
+
+
+def _plot_timing(ax, df_summary, all_models, model_colors, datasets_order=None):
+    """Grouped bar chart of execution time."""
+    if datasets_order is not None:
+        dataset_list = datasets_order
+    else:
+        dataset_list = df_summary["dataset"].unique()
+    x = np.arange(len(dataset_list))
+    n_models = len(all_models)
+    bar_width = 0.8 / max(n_models, 1)
+
+    for m_idx, model in enumerate(all_models):
+        times = []
+        for dataset in dataset_list:
+            mask = (
+                (df_summary["model"] == model)
+                & (df_summary["dataset"] == dataset)
+            )
+            t = df_summary.loc[mask, "time_total"].values
+            times.append(t[0] if len(t) > 0 else 0)
+
+        offset = (m_idx - n_models / 2 + 0.5) * bar_width
+        bars = ax.bar(
+            x + offset,
+            times,
+            bar_width * 0.9,
+            label=model,
+            color=model_colors[model],
+            edgecolor="black",
+            linewidth=0.5,
+            alpha=0.9
+        )
+
+        for bar, t in zip(bars, times):
+            if t > 0:
+                label = f"{t:.1f}s" if t < 60 else f"{t / 60:.1f}m"
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + 0.1,
+                    label,
+                    ha="center", va="bottom",
+                    fontsize=12, rotation=0,
+                )
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(
+        dataset_list, rotation=30, ha="right", fontsize=12
+    )
+    ax.set_ylabel("Time (seconds)")
+    ax.set_title("Execution time", fontsize=12, fontweight="bold")
+
+    # Log scale if there's a large spread
+    times_all = df_summary["time_total"].dropna()
+    if len(times_all) > 1 and times_all.max() / max(times_all.min(), 0.1) > 10:
+        ax.set_yscale("log")
+    ax.grid(axis="y", alpha=0.3)
+
+
+def _overlay_points(ax, data, position, color, max_points=200):
+    """Overlay jittered individual points on a boxplot."""
+    n_show = min(len(data), max_points)
+    if n_show < len(data):
+        show_data = np.random.RandomState(42).choice(
+            data, n_show, replace=False
+        )
+    else:
+        show_data = data
+
+    jitter = np.random.RandomState(42).normal(0, 0.08, len(show_data))
+    ax.scatter(
+        np.full(len(show_data), position) + jitter,
+        show_data,
+        s=8,
+        c=[color],
+        edgecolors="black",
+        linewidths=0.2,
+        zorder=5,
+        alpha=0.5,
+    )
+
+def benchmark_summary_table(
+    output_dir: str = "benchmark_results",
+    models: Optional[List[str]] = None,
+    datasets: Optional[List[str]] = None,
+    metrics: Optional[List[str]] = None,
+    reference_model: str = "velot",
+    detail: str = "aggregated",
+    save_csv: Optional[str] = None,
+) -> pd.DataFrame:
+    """
+    Build a summary DataFrame with statistics and p-values.
+
+    Parameters
+    ----------
+    output_dir
+        Directory containing JSON result files.
+    models
+        Filter to specific models. None for all.
+    datasets
+        Filter to specific datasets. None for all.
+    metrics
+        Which metrics to include. None for all.
+    reference_model
+        Model to compare others against. P-values are computed
+        between this model and each other model.
+    detail
+        Aggregation level:
+
+        - ``"aggregated"``: one row per (model, metric), pooling
+          all datasets and groups.
+        - ``"per_dataset"``: one row per (model, dataset, metric),
+          pooling groups within each dataset.
+        - ``"per_group"``: one row per (model, dataset, group, metric),
+          no aggregation.
+    save_csv
+        Path to save the DataFrame as CSV. None to skip saving.
+
+    Returns
+    -------
+    DataFrame with columns including mean, median, std, n, and
+    p-value vs the reference model.
+
+    Examples
+    --------
+    Quick overview::
+
+        df = velot.benchmark.benchmark_summary_table("benchmark_results")
+        print(df)
+
+    Per dataset with CSV export::
+
+        df = velot.benchmark.benchmark_summary_table(
+            "benchmark_results",
+            detail="per_dataset",
+            save_csv="benchmark_results/summary_per_dataset.csv",
+        )
+
+    Full detail::
+
+        df = velot.benchmark.benchmark_summary_table(
+            "benchmark_results",
+            detail="per_group",
+        )
+    """
+    if detail not in ("aggregated", "per_dataset", "per_group"):
+        raise ValueError(
+            f"detail must be 'aggregated', 'per_dataset', or "
+            f"'per_group', got '{detail}'."
+        )
+
+    df_cells = load_benchmarks_per_group(output_dir, models, datasets)
+    df_summary = load_benchmarks(output_dir, models, datasets)
+
+    if len(df_cells) == 0:
+        raise ValueError(f"No benchmark results found in '{output_dir}'.")
+
+    # Auto-detect metrics
+    if metrics is None:
+        metrics = sorted(df_cells["metric"].unique().tolist())
+    else:
+        df_cells = df_cells[df_cells["metric"].isin(metrics)]
+
+    # Add timing info per (model, dataset) for inclusion in the table
+    timing_map = {}
+    if len(df_summary) > 0 and "time_total" in df_summary.columns:
+        for _, row in df_summary.iterrows():
+            timing_map[(row["model"], row["dataset"])] = {
+                "time_total": row.get("time_total", np.nan),
+                "time_velocity": row.get("time_velocity", np.nan),
+            }
+
+    # ── Define grouping keys ────────────────────────────────────
+    if detail == "aggregated":
+        group_keys = ["model", "metric"]
+    elif detail == "per_dataset":
+        group_keys = ["model", "dataset", "metric"]
+    elif detail == "per_group":
+        group_keys = ["model", "dataset", "metric", "group"]
+
+    # ── Compute summary stats per group ─────────────────────────
+    records = []
+
+    for keys, grp in df_cells.groupby(group_keys):
+        if not isinstance(keys, tuple):
+            keys = (keys,)
+        row = dict(zip(group_keys, keys))
+
+        values = grp["value"].dropna().values
+        row["mean"] = float(np.nanmean(values))
+        row["median"] = float(np.nanmedian(values))
+        row["std"] = float(np.nanstd(values))
+        row["n"] = int(len(values))
+
+        # Store raw values for p-value computation later
+        row["_values"] = values
+
+        records.append(row)
+
+    df = pd.DataFrame(records)
+
+    # ── Compute p-values vs reference ───────────────────────────
+    df["pvalue"] = np.nan
+    df["significance"] = ""
+
+    if reference_model is not None and reference_model in df["model"].values:
+
+        # Define the matching keys (everything except model)
+        match_keys = [k for k in group_keys if k != "model"]
+
+        # Build lookup for reference model data
+        ref_mask = df["model"] == reference_model
+        ref_rows = df[ref_mask]
+
+        ref_lookup = {}
+        for idx, row in ref_rows.iterrows():
+            match_key = tuple(row[k] for k in match_keys)
+            ref_lookup[match_key] = row["_values"]
+
+        # Compute p-values for non-reference models
+        for idx, row in df.iterrows():
+            if row["model"] == reference_model:
+                continue
+
+            match_key = tuple(row[k] for k in match_keys)
+            ref_data = ref_lookup.get(match_key)
+
+            if ref_data is None or len(ref_data) < 5:
+                continue
+
+            other_data = row["_values"]
+            if len(other_data) < 5:
+                continue
+
+            try:
+                _, pval = mannwhitneyu(
+                    ref_data, other_data, alternative="two-sided"
+                )
+                df.at[idx, "pvalue"] = pval
+                df.at[idx, "significance"] = _significance_str(pval)
+            except ValueError:
+                continue
+
+        # Also mark the reference rows
+        df.loc[ref_mask, "significance"] = "ref"
+
+    # ── Clean up ────────────────────────────────────────────────
+    df = df.drop(columns=["_values"])
+
+    # Add timing columns for per_dataset and per_group detail
+    if detail in ("per_dataset", "per_group") and timing_map:
+        df["time_total"] = df.apply(
+            lambda r: timing_map.get(
+                (r["model"], r.get("dataset", "")), {}
+            ).get("time_total", np.nan),
+            axis=1,
+        )
+
+    # For aggregated, add mean timing across datasets
+    if detail == "aggregated" and timing_map:
+        model_times = {}
+        for (model, _), t in timing_map.items():
+            model_times.setdefault(model, []).append(t["time_total"])
+        df["time_total_mean"] = df["model"].map(
+            {m: np.nanmean(ts) for m, ts in model_times.items()}
+        )
+
+    # Sort for readability
+    sort_cols = [k for k in group_keys if k in df.columns]
+    df = df.sort_values(sort_cols).reset_index(drop=True)
+
+    # Reorder columns for readability
+    front_cols = [k for k in group_keys if k in df.columns]
+    stat_cols = ["mean", "median", "std", "n", "pvalue", "significance"]
+    time_cols = [c for c in df.columns if c.startswith("time_")]
+    other_cols = [
+        c for c in df.columns
+        if c not in front_cols + stat_cols + time_cols
+    ]
+    col_order = front_cols + stat_cols + time_cols + other_cols
+    col_order = [c for c in col_order if c in df.columns]
+    df = df[col_order]
+
+    # ── Save ────────────────────────────────────────────────────
+    if save_csv is not None:
+        os.makedirs(os.path.dirname(save_csv) or ".", exist_ok=True)
+        df.to_csv(save_csv, index=False, float_format="%.6f")
+        print(f"  Saved summary table: {save_csv}")
+
+    return df
+
+
+def benchmark_heatmaps(
+    output_dir: str = "benchmark_results",
+    models: Optional[List[str]] = None,
+    datasets: Optional[List[str]] = None,
+    metrics: Optional[List[str]] = None,
+    stat: str = "mean",
+    annot_fmt: str = ".3f",
+    cmap: str = "viridis",
+    figsize_per_panel: tuple = (5, 3),
+    show: bool = True,
+    save: Optional[str] = None,
+) -> plt.Figure:
+    """
+    Heatmap of model × dataset for each metric.
+
+    Parameters
+    ----------
+    output_dir
+        Directory with saved JSON benchmark files.
+    models
+        Which models to include. None for all.
+    datasets
+        Which datasets to include. None for all.
+    metrics
+        Which metrics to plot. None for all.
+    stat
+        Statistic to display in each cell:
+
+        - ``"mean"``: mean of per-cell values.
+        - ``"median"``: median of per-cell values.
+        - ``"rank"``: average rank across groups within each dataset.
+          Rank 1 = best. Averaged across all edges/clusters.
+    annot_fmt
+        Format string for cell annotations.
+    cmap
+        Colormap name. For rank, this is automatically reversed
+        (lower rank = better = greener).
+    figsize_per_panel
+        Size per metric panel.
+    show
+        Display the plot.
+    save
+        Path to save.
+
+    Returns
+    -------
+    matplotlib Figure.
+
+    Examples
+    --------
+    Mean performance heatmap::
+
+        velot.pl.benchmark_heatmaps("benchmark_results", stat="mean")
+
+    Rank heatmap::
+
+        velot.pl.benchmark_heatmaps("benchmark_results", stat="rank")
+
+    Specific metrics::
+
+        velot.pl.benchmark_heatmaps(
+            "benchmark_results", metrics=["cbdir"], stat="median",
+        )
+    """
+
+    if stat not in ("mean", "median", "rank"):
+        raise ValueError(
+            f"stat must be 'mean', 'median', or 'rank', got '{stat}'."
+        )
+
+    df_cells = load_benchmarks_per_group(output_dir, models, datasets)
+
+    if len(df_cells) == 0:
+        raise ValueError(f"No benchmark results found in '{output_dir}'.")
+
+    if metrics is None:
+        metrics = sorted(df_cells["metric"].unique().tolist())
+
+    n_metrics = len(metrics)
+    if n_metrics == 0:
+        raise ValueError("No metrics to plot.")
+
+    # Include timing as an extra panel
+    df_summary = load_benchmarks(output_dir, models, datasets)
+    has_timing = "time_total" in df_summary.columns
+
+    n_panels = n_metrics + (1 if has_timing else 0)
+    fig, axes = plt.subplots(
+        1, n_panels,
+        figsize=(figsize_per_panel[0] * n_panels, figsize_per_panel[1]),
+        squeeze=False,
+    )
+    axes = axes.flatten()
+
+    for i, metric_name in enumerate(metrics):
+        ax = axes[i]
+        df_m = df_cells[df_cells["metric"] == metric_name]
+
+        if len(df_m) == 0:
+            ax.set_title(f"{metric_name}\n(no data)")
+            continue
+
+        if stat == "rank":
+            pivot = _compute_rank_pivot(df_m)
+            _draw_heatmap(
+                ax, pivot,
+                title=f"{metric_name.upper()} (avg rank)",
+                cmap=cmap + "_r",  # reverse: low rank = good = green
+                annot_fmt=".2f",
+                vmin=1,
+                vmax=len(pivot.index),
+                lower_is_better=True,
+            )
+        else:
+            pivot = _compute_stat_pivot(df_m, stat)
+            _draw_heatmap(
+                ax, pivot,
+                title=f"{metric_name.upper()} ({stat})",
+                cmap=cmap,
+                annot_fmt=annot_fmt,
+                lower_is_better=False,
+            )
+
+    # Timing heatmap
+    if has_timing:
+        ax = axes[n_metrics]
+        pivot_time = df_summary.pivot_table(
+            values="time_total",
+            index="model",
+            columns="dataset",
+            aggfunc="first",
+        )
+        if len(pivot_time) > 0:
+            _draw_heatmap(
+                ax, pivot_time,
+                title="Time (seconds)",
+                cmap=cmap + "_r",  # lower = better = green
+                annot_fmt=".1f",
+                lower_is_better=True,
+            )
+
+    plt.tight_layout()
+
+    if save:
+        os.makedirs(os.path.dirname(save) or ".", exist_ok=True)
+        fig.savefig(save, dpi=150, bbox_inches="tight")
+    if show:
+        plt.show()
+
+    return fig
+
+
+def benchmark_ranking(
+    output_dir: str = "benchmark_results",
+    models: Optional[List[str]] = None,
+    models_order: Optional[List[str]] = None,
+    datasets: Optional[List[str]] = None,
+    metrics: Optional[List[str]] = None,
+    include_timing: bool = True,
+    figsize: tuple = (8, 5),
+    show: bool = True,
+    save: Optional[str] = None,
+) -> plt.Figure:
+    """
+    Overall ranking summary: average rank across all datasets and groups.
+
+    For each (dataset, group, metric) combination, models are ranked
+    1 to N (1 = best). Ranks are then averaged to produce a single
+    score per model. Lower is better.
+
+    Optionally includes execution time as a ranked criterion.
+
+    Parameters
+    ----------
+    output_dir
+        Directory with saved JSON benchmark files.
+    models
+        Which models to include. None for all.
+    datasets
+        Which datasets to include. None for all.
+    metrics
+        Which metrics to include. None for all.
+    include_timing
+        Whether to include execution time as a ranking criterion.
+    figsize
+        Figure size.
+    show
+        Display the plot.
+    save
+        Path to save.
+
+    Returns
+    -------
+    matplotlib Figure.
+
+    Examples
+    --------
+    ::
+
+        velot.pl.benchmark_ranking("benchmark_results")
+    """
+
+    df_cells = load_benchmarks_per_group(output_dir, models, datasets)
+    df_summary = load_benchmarks(output_dir, models, datasets)
+
+    if len(df_cells) == 0:
+        raise ValueError(f"No benchmark results found in '{output_dir}'.")
+
+    if metrics is None:
+        metrics = sorted(df_cells["metric"].unique().tolist())
+
+    # ── Compute ranks per (dataset, group, metric) ──────────────
+    rank_records = []
+
+    for metric_name in metrics:
+        df_m = df_cells[df_cells["metric"] == metric_name]
+
+        for (dataset, group), grp in df_m.groupby(["dataset", "group"]):
+            # Compute mean per model for this (dataset, group, metric)
+            model_means = grp.groupby("model")["value"].mean()
+
+            # Rank: higher value = better → rank ascending=False
+            ranks = model_means.rank(ascending=False, method="average")
+
+            for model, rank in ranks.items():
+                rank_records.append({
+                    "model": model,
+                    "dataset": dataset,
+                    "group": group,
+                    "metric": metric_name,
+                    "criterion": metric_name,
+                    "rank": rank,
+                })
+
+    # ── Add timing ranks per dataset ────────────────────────────
+    if include_timing and "time_total" in df_summary.columns:
+        for dataset in df_summary["dataset"].unique():
+            df_d = df_summary[df_summary["dataset"] == dataset]
+            times = df_d.set_index("model")["time_total"]
+
+            # Lower time = better → rank ascending=True
+            ranks = times.rank(ascending=True, method="average")
+
+            for model, rank in ranks.items():
+                rank_records.append({
+                    "model": model,
+                    "dataset": dataset,
+                    "group": "_timing_",
+                    "metric": "time",
+                    "criterion": "time",
+                    "rank": rank,
+                })
+
+    df_ranks = pd.DataFrame(rank_records)
+
+    if len(df_ranks) == 0:
+        raise ValueError("No ranking data computed.")
+
+    # ── Aggregate ───────────────────────────────────────────────
+    # Average rank per (model, criterion)
+    avg_per_criterion = (
+        df_ranks.groupby(["model", "criterion"])["rank"]
+        .mean()
+        .reset_index()
+        .rename(columns={"rank": "avg_rank"})
+    )
+
+    # Overall average rank per model
+    avg_overall = (
+        df_ranks.groupby("model")["rank"]
+        .mean()
+        .reset_index()
+        .rename(columns={"rank": "avg_rank"})
+        .sort_values("avg_rank")
+    )
+
+    # ── Plot ────────────────────────────────────────────────────
+    all_models = avg_overall["model"].values
+    n_models = len(all_models)
+    criteria = sorted(avg_per_criterion["criterion"].unique())
+    n_criteria = len(criteria)
+
+    fig, axes = plt.subplots(
+        1, 2,
+        figsize=figsize,
+        gridspec_kw={"width_ratios": [2, 3]},
+    )
+
+    # --- Left panel: overall average rank bar chart ---
+    ax = axes[0]
+    cmap = plt.get_cmap("Set2")
+    colors = [
+        cmap(0),
+        cmap(1),
+        cmap(2),
+        cmap(3),
+        cmap(5)
+    ]
+    # colors = plt.cm.Set2(np.linspace(0, 1, max(n_models, 1)))
+    if models_order is not None:
+        model_colors = dict(zip(models_order, colors))
+    else:
+        model_colors = dict(zip(all_models, colors))
+    # colors = plt.cm.Set2(np.linspace(0, 1, max(n_models, 1)))
+    # model_colors = dict(zip(all_models, colors))
+
+    bars = ax.barh(
+        range(n_models),
+        avg_overall["avg_rank"].values,
+        color=[model_colors[m] for m in all_models],
+        edgecolor="black",
+        linewidth=0.5,
+    )
+
+    ax.set_yticks(range(n_models))
+    ax.set_yticklabels(all_models, fontsize=10)
+    ax.set_xlabel("Average rank (lower = better)", fontsize=10)
+    ax.set_title("Overall ranking", fontsize=12, fontweight="bold")
+    ax.invert_yaxis()  # best (lowest rank) at top
+
+    # Annotate bars
+    for bar, val in zip(bars, avg_overall["avg_rank"].values):
+        ax.text(
+            bar.get_width() + 0.05,
+            bar.get_y() + bar.get_height() / 2,
+            f"{val:.2f}",
+            ha="left", va="center", fontsize=9, fontweight="bold",
+        )
+
+    ax.set_xlim(0, n_models + 0.5)
+    ax.axvline(1, color="green", linewidth=0.8, linestyle="--", alpha=0.5,
+               label="Best possible (1.0)")
+    ax.grid(axis="x", alpha=0.3)
+
+    # --- Right panel: rank breakdown by criterion ---
+    ax = axes[1]
+
+    pivot_rank = avg_per_criterion.pivot_table(
+        values="avg_rank",
+        index="model",
+        columns="criterion",
+    )
+    # Reorder models by overall rank
+    pivot_rank = pivot_rank.loc[all_models]
+
+    x = np.arange(n_criteria)
+    bar_width = 0.8 / max(n_models, 1)
+
+    for m_idx, model in enumerate(all_models):
+        if model not in pivot_rank.index:
+            continue
+        values = pivot_rank.loc[model].values
+        offset = (m_idx - n_models / 2 + 0.5) * bar_width
+
+        ax.bar(
+            x + offset,
+            values,
+            bar_width * 0.9,
+            color=model_colors[model],
+            edgecolor="black",
+            linewidth=0.5,
+            label=model,
+        )
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(
+        [c.upper() for c in criteria],
+        rotation=30, ha="right", fontsize=9,
+    )
+    ax.set_ylabel("Average rank (lower = better)", fontsize=10)
+    ax.set_title("Rank by criterion", fontsize=12, fontweight="bold")
+    ax.axhline(1, color="green", linewidth=0.8, linestyle="--", alpha=0.5)
+    ax.grid(axis="y", alpha=0.3)
+    ax.legend(fontsize=8, frameon=False, loc="upper left")
+
+    plt.tight_layout()
+
+    if save:
+        os.makedirs(os.path.dirname(save) or ".", exist_ok=True)
+        fig.savefig(save, dpi=150, bbox_inches="tight")
+    if show:
+        plt.show()
+
+    return fig
+
+
+# ── Internal helpers ────────────────────────────────────────────
+def _compute_stat_pivot(df_m, stat="mean"):
+    """
+    Pivot: model × dataset, values = mean or median pooling all groups.
+    """
+    agg_func = "mean" if stat == "mean" else "median"
+    pivot = df_m.pivot_table(
+        values="value",
+        index="model",
+        columns="dataset",
+        aggfunc=agg_func,
+    )
+    return pivot
+
+
+def _compute_rank_pivot(df_m):
+    """
+    Pivot: model × dataset, values = average rank across groups.
+
+    For each (dataset, group), rank models (1=best). Then average
+    across groups within each dataset.
+    """
+    rank_records = []
+
+    for (dataset, group), grp in df_m.groupby(["dataset", "group"]):
+        model_means = grp.groupby("model")["value"].mean()
+        # Higher value = better → rank ascending=False
+        ranks = model_means.rank(ascending=False, method="average")
+
+        for model, rank in ranks.items():
+            rank_records.append({
+                "model": model,
+                "dataset": dataset,
+                "rank": rank,
+            })
+
+    df_ranks = pd.DataFrame(rank_records)
+
+    pivot = df_ranks.pivot_table(
+        values="rank",
+        index="model",
+        columns="dataset",
+        aggfunc="mean",
+    )
+    return pivot
+
+
+def _draw_heatmap(
+    ax,
+    pivot,
+    title="",
+    cmap="viridis",
+    annot_fmt=".3f",
+    vmin=None,
+    vmax=None,
+    lower_is_better=False,
+):
+    """
+    Draw an annotated heatmap on the given axes.
+
+    Highlights the best value in each column (dataset) with a
+    bold border.
+    """
+    data = pivot.values
+    n_rows, n_cols = data.shape
+
+    if vmin is None:
+        vmin = np.nanmin(data)
+    if vmax is None:
+        vmax = np.nanmax(data)
+
+    # Draw the heatmap
+    im = ax.imshow(
+        data,
+        cmap=cmap,
+        aspect="auto",
+        vmin=vmin,
+        vmax=vmax,
+    )
+
+    # Find best row per column FIRST
+    best_rows = {}
+    for c in range(n_cols):
+        col_data = data[:, c]
+        valid = ~np.isnan(col_data)
+        if not valid.any():
+            continue
+        if lower_is_better:
+            best_rows[c] = int(np.nanargmin(col_data))
+        else:
+            best_rows[c] = int(np.nanargmax(col_data))
+
+    # Annotate cells
+    for r in range(n_rows):
+        for c in range(n_cols):
+            val = data[r, c]
+            if np.isnan(val):
+                text = "—"
+                color = "gray"
+                weight = "normal"
+            else:
+                text = f"{val:{annot_fmt}}"
+                normalized = (val - vmin) / max(vmax - vmin, 1e-10)
+                if lower_is_better:
+                    normalized = 1 - normalized
+                color = "black" if normalized < 0.5 else "white"
+                weight = "bold" if best_rows.get(c) == r else "normal"
+
+            ax.text(
+                c, r, text,
+                ha="center", va="center",
+                fontsize=10, fontweight=weight,
+                color=color,
+            )
+
+    # Labels
+    ax.set_xticks(range(n_cols))
+    ax.set_xticklabels(
+        pivot.columns, rotation=30, ha="right", fontsize=9,
+    )
+    ax.set_yticks(range(n_rows))
+    ax.set_yticklabels(pivot.index, fontsize=10)
+    ax.set_title(title, fontsize=12, fontweight="bold", pad=10)
+
+    # Colorbar
+    cbar = ax.figure.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.ax.tick_params(labelsize=8)
+
+
+def benchmark_dotplot(
+    output_dir: str = "benchmark_results",
+    models: Optional[List[str]] = None,
+    datasets: Optional[List[str]] = None,
+    datasets_order: Optional[List[str]] = None,
+    metrics: Optional[List[str]] = None,
+    include_timing: bool = True,
+    normalize_mode: str = "global",
+    stat: str = "mean",
+    metric_colors: Optional[Dict[str, str]] = None,
+    metric_labels: Optional[Dict[str, str]] = None,
+    model_labels: Optional[Dict[str, str]] = None,
+    higher_is_better: Optional[Dict[str, bool]] = None,
+    figsize: Optional[tuple] = None,
+    legend: bool = True,
+    summary: bool = True,
+    show: bool = True,
+    save: Optional[str] = None,
+) -> plt.Figure:
+    """
+    Integrated dotplot benchmark summary.
+
+    Circle area reflects per-column normalised score (for visual
+    comparison only). Displayed values match the heatmap values
+    for the chosen ``stat``.
+
+    Parameters
+    ----------
+    output_dir
+        Directory with saved JSON benchmark files.
+    models
+        Which models to include. None for all.
+    datasets
+        Which datasets to include. None for all.
+    metrics
+        Which metrics to include. None for all found.
+    include_timing
+        Whether to include execution time as a metric group.
+    stat
+        Aggregation statistic — same as in ``benchmark_heatmaps``:
+
+        - ``"mean"``: mean of per-cell values per (model, dataset).
+        - ``"median"``: median of per-cell values.
+        - ``"rank"``: average rank across groups within each dataset
+          (1 = best). Consistent with heatmap ``stat="rank"``.
+    metric_colors
+        Dict mapping metric name → color.
+    metric_labels
+        Dict mapping metric name → display label.
+    model_labels
+        Dict mapping model name → display label.
+    higher_is_better
+        Dict mapping metric name → bool. Only used for normalisation
+        direction and ``stat="rank"``. Default True for accuracy
+        metrics, False for time.
+    figsize
+        Figure size. Auto-computed if None.
+    show
+        Display the plot.
+    save
+        Path to save.
+
+    Returns
+    -------
+    matplotlib Figure.
+    """
+
+    df_cells = load_benchmarks_per_group(output_dir, models, datasets)
+    df_summary = load_benchmarks(output_dir, models, datasets)
+
+    if len(df_cells) == 0:
+        raise ValueError(f"No benchmark results found in '{output_dir}'.")
+
+    # ── Resolve metrics ─────────────────────────────────────────
+    available_metrics = sorted(df_cells["metric"].unique().tolist())
+    if metrics is None:
+        metrics = available_metrics
+    else:
+        metrics = [m for m in metrics if m in available_metrics]
+
+    if len(metrics) == 0:
+        raise ValueError("No metrics found to plot.")
+
+    all_models = sorted(df_summary["model"].unique().tolist())
+    if datasets_order is not None:
+        all_datasets = datasets_order
+    else:
+        all_datasets = sorted(df_summary["dataset"].unique().tolist())
+    n_models = len(all_models)
+    n_datasets = len(all_datasets)
+
+    # ── Defaults ────────────────────────────────────────────────
+    default_palette = ["#c0392b", "#2874a6", "#8e44ad", "#d35400",
+                       "#16a085", "#7d3c98", "#2c3e50"]
+    if metric_colors is None:
+        metric_colors = {}
+    for i, m in enumerate(metrics):
+        if m not in metric_colors:
+            metric_colors[m] = default_palette[i % len(default_palette)]
+    if include_timing:
+        metric_colors.setdefault("time", "#1e8449")
+
+    if higher_is_better is None:
+        higher_is_better = {}
+    for m in metrics:
+        higher_is_better.setdefault(m, True)
+    higher_is_better.setdefault("time", False)
+
+    if metric_labels is None:
+        metric_labels = {}
+    for m in metrics:
+        arrow = "↑" if higher_is_better.get(m, True) else "↓"
+        metric_labels.setdefault(m, f"{m.upper()} {arrow}")
+    metric_labels.setdefault("time", "Time ↓ (seconds)")
+
+    if model_labels is None:
+        model_labels = {}
+    for m in all_models:
+        model_labels.setdefault(m, m)
+
+    # ── Build RAW data matrices (same as heatmaps) ──────────────
+    raw_matrices = {}  # metric → (n_models, n_datasets)
+
+    for metric_name in metrics:
+        df_m = df_cells[df_cells["metric"] == metric_name]
+
+        if stat == "rank":
+            # Rank per (dataset, group), then average within dataset
+            # Same logic as _compute_rank_pivot in heatmaps
+            mat = np.full((n_models, n_datasets), np.nan)
+            for di, dataset in enumerate(all_datasets):
+                df_d = df_m[df_m["dataset"] == dataset]
+                groups = df_d["group"].unique()
+
+                model_ranks_all = {m: [] for m in all_models}
+                for group in groups:
+                    df_g = df_d[df_d["group"] == group]
+                    model_means = df_g.groupby("model")["value"].mean()
+                    hb = higher_is_better.get(metric_name, True)
+                    ranks = model_means.rank(
+                        ascending=not hb, method="average"
+                    )
+                    for model in all_models:
+                        if model in ranks.index:
+                            model_ranks_all[model].append(ranks[model])
+
+                for mi, model in enumerate(all_models):
+                    if model_ranks_all[model]:
+                        mat[mi, di] = np.mean(model_ranks_all[model])
+            raw_matrices[metric_name] = mat
+        else:
+            # Mean or median of per-cell values
+            agg_func = np.nanmean if stat == "mean" else np.nanmedian
+            mat = np.full((n_models, n_datasets), np.nan)
+            for mi, model in enumerate(all_models):
+                for di, dataset in enumerate(all_datasets):
+                    mask = (
+                        (df_m["model"] == model)
+                        & (df_m["dataset"] == dataset)
+                    )
+                    vals = df_m.loc[mask, "value"].dropna().values
+                    if len(vals) > 0:
+                        mat[mi, di] = agg_func(vals)
+            raw_matrices[metric_name] = mat
+
+    # Time matrix
+    has_timing = include_timing and "time_total" in df_summary.columns
+    if has_timing:
+        if stat == "rank":
+            time_mat = np.full((n_models, n_datasets), np.nan)
+            for di, dataset in enumerate(all_datasets):
+                df_d = df_summary[df_summary["dataset"] == dataset]
+                times = df_d.set_index("model")["time_total"]
+                ranks = times.rank(ascending=True, method="average")
+                for mi, model in enumerate(all_models):
+                    if model in ranks.index:
+                        time_mat[mi, di] = ranks[model]
+        else:
+            time_mat = np.full((n_models, n_datasets), np.nan)
+            for mi, model in enumerate(all_models):
+                for di, dataset in enumerate(all_datasets):
+                    mask = (
+                        (df_summary["model"] == model)
+                        & (df_summary["dataset"] == dataset)
+                    )
+                    vals = df_summary.loc[mask, "time_total"].values
+                    if len(vals) > 0:
+                        time_mat[mi, di] = vals[0]
+        raw_matrices["time"] = time_mat
+        all_metric_keys = metrics + ["time"]
+    else:
+        all_metric_keys = list(metrics)
+
+    # ── Compute OVERALL per metric (same as heatmap) ────────────
+    # For mean/median: average of raw values across datasets
+    # For rank: average of ranks across datasets
+    raw_overall = {}
+    for mk in all_metric_keys:
+        raw_overall[mk] = np.nanmean(raw_matrices[mk], axis=1)
+
+    # ── Grand score (for ranking methods) ───────────────────────
+    if stat == "rank":
+        # Average of average ranks — lower is better
+        grand = np.nanmean(
+            np.column_stack([raw_overall[mk] for mk in all_metric_keys]),
+            axis=1,
+        )
+        order = np.argsort(grand)  # lower rank = better = first
+        grand_higher_better = False
+    else:
+        # Normalise each metric's overall to [0,1] then average
+        # This is needed because metrics have different scales
+        norm_overalls = []
+        for mk in all_metric_keys:
+            ov = raw_overall[mk].copy()
+            valid = ~np.isnan(ov)
+            if valid.sum() == 0:
+                norm_overalls.append(np.full_like(ov, np.nan))
+                continue
+            vmin, vmax = ov[valid].min(), ov[valid].max()
+            hb = higher_is_better.get(mk, True)
+            if mk == "time" and stat != "rank":
+                # Log transform time before normalising
+                ov_t = np.full_like(ov, np.nan)
+                ov_t[valid] = np.log(ov[valid])
+                vmin, vmax = ov_t[valid].min(), ov_t[valid].max()
+                ov = ov_t
+                hb = False
+            if vmax == vmin:
+                norm_overalls.append(np.where(valid, 1.0, np.nan))
+                continue
+            normed = np.full_like(ov, np.nan)
+            normed[valid] = (ov[valid] - vmin) / (vmax - vmin)
+            if not hb:
+                normed[valid] = 1.0 - normed[valid]
+            norm_overalls.append(normed)
+
+        grand = np.nanmean(np.column_stack(norm_overalls), axis=1)
+        order = np.argsort(-grand)  # higher = better = first
+        grand_higher_better = True
+
+    models_sorted = [all_models[i] for i in order]
+
+    # ── Normalise for DOT SIZING only ───────────────────────────
+    def _norm_for_sizing(arr, hb=True, log_transform=False, mode="global"):
+        """
+        Map values to [0, 1] for circle area.
+
+        mode: "column" → per-column, "row" → per-row, "global" → whole matrix.
+        """
+        out = np.full_like(arr, np.nan, dtype=float)
+
+        # Apply log transform first if needed
+        work = arr.astype(float).copy()
+        if log_transform:
+            valid_all = ~np.isnan(work)
+            work[valid_all] = np.log(work[valid_all])
+
+        if mode == "column":
+            for j in range(work.shape[1]):
+                col = work[:, j]
+                valid = ~np.isnan(col)
+                if valid.sum() == 0:
+                    continue
+                vmin, vmax = col[valid].min(), col[valid].max()
+                if vmax == vmin:
+                    out[valid, j] = 1.0
+                    continue
+                s = (col[valid] - vmin) / (vmax - vmin)
+                if not hb:
+                    s = 1.0 - s
+                out[valid, j] = s
+
+        elif mode == "row":
+            for i in range(work.shape[0]):
+                row = work[i, :]
+                valid = ~np.isnan(row)
+                if valid.sum() == 0:
+                    continue
+                vmin, vmax = row[valid].min(), row[valid].max()
+                if vmax == vmin:
+                    out[i, valid] = 1.0
+                    continue
+                s = (row[valid] - vmin) / (vmax - vmin)
+                if not hb:
+                    s = 1.0 - s
+                out[i, valid] = s
+
+        elif mode == "global":
+            valid = ~np.isnan(work)
+            if valid.sum() == 0:
+                return out
+            vmin, vmax = work[valid].min(), work[valid].max()
+            if vmax == vmin:
+                out[valid] = 1.0
+                return out
+            s = (work[valid] - vmin) / (vmax - vmin)
+            if not hb:
+                s = 1.0 - s
+            out[valid] = s
+
+        return out
+
+    size_matrices = {}
+    for mk in all_metric_keys:
+        hb = higher_is_better.get(mk, True)
+        if stat == "rank":
+            size_matrices[mk] = _norm_for_sizing(
+                raw_matrices[mk], hb=False,
+                log_transform=False, mode=normalize_mode,
+            )
+        elif mk == "time":
+            size_matrices[mk] = _norm_for_sizing(
+                raw_matrices[mk], hb=False,
+                log_transform=True, mode=normalize_mode,
+            )
+        else:
+            size_matrices[mk] = _norm_for_sizing(
+                raw_matrices[mk], hb=hb,
+                log_transform=False, mode=normalize_mode,
+            )
+
+    # Overall sizing
+    size_overall = {}
+    for mk in all_metric_keys:
+        size_overall[mk] = np.nanmean(size_matrices[mk], axis=1)
+
+    # ── Build column layout ─────────────────────────────────────
+    cols = []
+    group_spans = []
+    x = 0
+
+    # Determine annotation format
+    if stat == "rank":
+        annot_fmt = ".2f"  # ranks like 1.24
+    else:
+        annot_fmt = ".2f"  # raw values like 0.829
+
+    time_annot_fmt = ".1f" if stat != "rank" else ".2f"
+
+    for mk in all_metric_keys:
+        gcolor = metric_colors[mk]
+        glabel = metric_labels[mk]
+        g_start = x
+
+        for di, dataset in enumerate(all_datasets):
+            cols.append({
+                "x": x,
+                "color": gcolor,
+                "label": dataset,
+                "kind": "dataset",
+                "raw_values": raw_matrices[mk][:, di],
+                "size_values": size_matrices[mk][:, di],
+                "fmt": time_annot_fmt if mk == "time" else annot_fmt,
+            })
+            x += 1
+
+        cols.append({
+            "x": x,
+            "color": gcolor,
+            "label": "Overall",
+            "kind": "overall",
+            "raw_values": raw_overall[mk],
+            "size_values": size_overall[mk],
+            "fmt": time_annot_fmt if mk == "time" else annot_fmt,
+        })
+        x += 1
+        group_spans.append((glabel, gcolor, g_start - 0.45, x - 1 + 0.45))
+        x += 0.7
+
+    m2i = {m: i for i, m in enumerate(all_models)}
+
+    # ── Figure setup ────────────────────────────────────────────
+    if figsize is None:
+        width = max(12, len(cols) * 0.9 + 6)
+        height = max(4, n_models * 0.9 + 2.5)
+        figsize = (width, height)
+
+    fig = plt.figure(figsize=figsize)
+    ax = fig.add_axes([0.14, 0.16, 0.68, 0.64])
+
+    # ── Zebra striping ──────────────────────────────────────────
+    for row in range(n_models):
+        if row % 2 == 0:
+            ax.add_patch(plt.Rectangle(
+                (-0.7, row - 0.48), x + 8, 0.96,
+                color="#f6f6f6", zorder=0, lw=0,
+            ))
+
+    # ── Find best value per column for highlighting ─────────────
+    best_per_col = {}
+    for ci, col_info in enumerate(cols):
+        raw_vals = col_info["raw_values"]
+        valid = ~np.isnan(raw_vals)
+        if not valid.any():
+            continue
+        mk = None
+        for mk_name in all_metric_keys:
+            if col_info["color"] == metric_colors[mk_name]:
+                mk = mk_name
+                break
+        hb = higher_is_better.get(mk, True)
+        if stat == "rank":
+            hb = False  # lower rank = better
+        if mk == "time" and stat != "rank":
+            hb = False  # lower time = better
+
+        if hb:
+            best_per_col[ci] = np.nanmax(raw_vals)
+        else:
+            best_per_col[ci] = np.nanmin(raw_vals)
+
+    for row, m in enumerate(models_sorted):
+        mi = m2i[m]
+        for ci, col_info in enumerate(cols):
+            cx = col_info["x"]
+            gcolor = col_info["color"]
+            kind = col_info["kind"]
+            raw_val = col_info["raw_values"][mi]
+            size_val = col_info["size_values"][mi]
+            fmt = col_info["fmt"]
+
+            if np.isnan(raw_val):
+                ax.plot(
+                    cx, row, marker="x", color="#888",
+                    markersize=11, mew=2, zorder=3,
+                )
+                continue
+
+            # Check if this is the best in its column
+            is_best = (
+                ci in best_per_col
+                and np.isclose(raw_val, best_per_col[ci], rtol=1e-6)
+            )
+
+            dot_size = 60 + 1100 * max(size_val, 0)
+            ax.scatter(
+                cx, row, s=dot_size,
+                color=gcolor, #color="gold" if is_best else gcolor,
+                alpha=1 if is_best else 0.75,
+                edgecolor="black",
+                linewidth=1.0,
+                zorder=4 if is_best else 3,
+            )
+
+            # Annotation
+            text = f"{raw_val:{fmt}}"
+            if size_val >= 0.30:
+                ax.text(
+                    cx, row, text,
+                    ha="center", va="center",
+                    fontsize=7.5,
+                    color="white", #"black" if is_best else "white",
+                    fontweight="bold", zorder=5,
+                )
+
+    # ── Group header bars ───────────────────────────────────────
+    header_y = -1.05
+    for gtitle, gcolor, gs, ge in group_spans:
+        ax.add_patch(plt.Rectangle(
+            (gs, header_y - 0.32), ge - gs, 0.5,
+            color=gcolor, alpha=0.95, zorder=2,
+        ))
+        ax.text(
+            (gs + ge) / 2, header_y - 0.07, gtitle,
+            ha="center", va="center",
+            color="white", fontsize=10.5, fontweight="bold",
+        )
+
+    # ── Right-hand ranking panel ────────────────────────────────
+    bar_x0 = x
+    bar_w = 3.0
+    rank_x = bar_x0 + bar_w + 1.1
+
+    # For bar length, normalise grand to [0,1] for display
+    grand_valid = grand[~np.isnan(grand)]
+    if len(grand_valid) > 0:
+        if grand_higher_better:
+            g_min, g_max = grand_valid.min(), grand_valid.max()
+        else:
+            # Invert for bar: lower rank → longer bar
+            g_min, g_max = grand_valid.min(), grand_valid.max()
+    else:
+        g_min, g_max = 0, 1
+
+    for row, m in enumerate(models_sorted):
+        mi = m2i[m]
+        val = grand[mi]
+        rank = row + 1
+        bcolor = "#1b2631" if rank == 1 else "#566573"
+
+        # Bar length proportional to score
+        if grand_higher_better:
+            bar_frac = (val - g_min) / max(g_max - g_min, 1e-10)
+        else:
+            # For ranks: lower is better → invert bar
+            bar_frac = 1.0 - (val - g_min) / max(g_max - g_min, 1e-10)
+
+        bar_frac = max(bar_frac, 0.02)  # minimum visible bar
+
+        ax.add_patch(plt.Rectangle(
+            (bar_x0, row - 0.28), bar_frac * bar_w, 0.56,
+            color=bcolor, alpha=0.92, zorder=3,
+        ))
+
+        # Show the actual grand value
+        if stat == "rank":
+            grand_text = f"{val:.2f}"
+        else:
+            grand_text = f"{val:.2f}"
+
+        ax.text(
+            bar_x0 + bar_frac * bar_w + 0.08, row,
+            grand_text, va="center",
+            fontsize=10, fontweight="bold",
+        )
+
+    # Ranking panel header
+    ax.add_patch(plt.Rectangle(
+        (bar_x0, header_y - 0.32),
+        (rank_x - bar_x0) + 0.7, 0.5,
+        color="#1b2631", alpha=0.95, zorder=2,
+    ))
+    ax.text(
+        bar_x0 + ((rank_x - bar_x0) + 0.7) / 2, header_y - 0.07,
+        "Overall ranking",
+        ha="center", va="center",
+        color="white", fontsize=10.5, fontweight="bold",
+    )
+
+    # ── Axes formatting ─────────────────────────────────────────
+    ax.set_xticks([c["x"] for c in cols])
+    ax.set_xticklabels(
+        [
+            c["label"].capitalize() if c["kind"] != "overall"
+            else "Overall"
+            for c in cols
+        ],
+        rotation=40, fontsize=9.5, ha="right",
+    )
+
+    ax.set_yticks(range(n_models))
+    ax.set_yticklabels(
+        [model_labels.get(m, m) for m in models_sorted],
+        fontsize=11, fontweight="bold",
+    )
+    ax.invert_yaxis()
+
+    ax.set_xlim(-0.9, rank_x + 1.0)
+    ax.set_ylim(n_models - 0.5, header_y - 0.55)
+    for sp in ("top", "right", "left", "bottom"):
+        ax.spines[sp].set_visible(False)
+    ax.tick_params(left=False, bottom=False)
+
+    if legend:
+        # ── Legend: circle size scale ───────────────────────────────
+        leg = fig.add_axes([0.14, -0.05, 0.38, 0.1])
+        leg.axis("off")
+        leg.set_xlim(0, 5.5)
+        leg.set_ylim(0, 1)
+        leg.text(
+            -0.05, 0.6, "Norm. score:",
+            ha="right", va="center",
+            fontsize=9.5, fontweight="bold",
+        )
+        for i, s in enumerate([0.1, 0.3, 0.5, 0.7, 0.9, 1.0]):
+            leg.scatter(
+                i * 0.85 + 0.25, 0.6, s=60 + 1100 * s,
+                color="#7f8c8d", alpha=0.78,
+                edgecolor="black", linewidth=0.5,
+            )
+            leg.text(
+                i * 0.85 + 0.25, 0, f"{s:.1f}",
+                ha="center", fontsize=8.5,
+            )
+
+        # ── Legend: metric colours ──────────────────────────────────
+        cl = fig.add_axes([0.55, -0.05, 0.35, 0.1])
+        cl.axis("off")
+        n_legend = len(all_metric_keys)
+        cl.set_xlim(0, max(n_legend * 1.3, 2))
+        cl.set_ylim(0, 1)
+        for i, mk in enumerate(all_metric_keys):
+            cl.scatter(
+                i * 1.25 + 0.2, 0.6, s=380,
+                color=metric_colors[mk], alpha=0.88,
+                edgecolor="black", linewidth=0.5,
+            )
+            cl.text(
+                i * 1.25 + 0.45, 0.6,
+                metric_labels.get(mk, mk.upper()),
+                va="center", fontsize=9.5, fontweight="bold",
+            )
+    
+    if summary:
+        # ── Print numeric summary ───────────────────────────────────
+        print(f"\nBenchmark ranking summary (stat={stat}):")
+        print("-" * 70)
+        header_parts = ["Rank", f"{'Model':<24}"]
+        for mk in all_metric_keys:
+            header_parts.append(f"{mk.upper():>8}")
+        header_parts.append(f"{'GRAND':>8}")
+        print("  ".join(header_parts))
+        print("-" * 70)
+
+        for rk, m in enumerate(models_sorted, 1):
+            mi = m2i[m]
+            parts = [f"  #{rk}", f"  {model_labels.get(m, m):<24}"]
+            for mk in all_metric_keys:
+                ov = raw_overall[mk][mi]
+                if mk == "time" and stat != "rank":
+                    parts.append(f"{ov:>8.1f}")
+                else:
+                    parts.append(f"{ov:>8.3f}")
+            parts.append(f"{grand[mi]:>8.3f}")
+            print("  ".join(parts))
+
+    # ── Save / show ─────────────────────────────────────────────
+    if save:
+        os.makedirs(os.path.dirname(save) or ".", exist_ok=True)
+        fig.savefig(save, dpi=300, bbox_inches="tight", facecolor="white")
+        print(f"\n  Saved: {save}")
+    if show:
+        plt.show()
+
+    return fig
+
+=== file: velot/datasets.py ===
 """
 velot.datasets — Built-in Datasets
 ===================================
@@ -671,7 +3312,7 @@ def synthetic_cycle(
 
     # Validate and set defaults
     if names is None:
-        names = [f"Phase_{i+1}" for i in range(n_segments)]
+        names = [f"Cluster {i+1}" for i in range(n_segments)]
     if len(names) != n_segments:
         raise ValueError(
             f"Length of names ({len(names)}) must match "
@@ -767,17 +3408,17 @@ def synthetic_cycle(
 
     # PCA
     if X.shape[1] > 2:
-        sc.tl.pca(adata)
+        sc.pp.pca(adata)
     else:
         adata.obsm["X_pca"] = X.copy()
 
     # KNN + UMAP
-    sc.pp.neighbors(adata, n_neighbors=n_neighbors)
+    sc.pp.neighbors(adata, n_neighbors=n_neighbors, use_rep="X_pca")
     sc.tl.umap(adata)
 
     return adata
 
-=== file: metrics.py ===
+=== file: velot/metrics.py ===
 """
 velot.metrics — Evaluation
 ==========================
@@ -1050,7 +3691,8 @@ def summary(
     adata: AnnData,
     cluster_edges: Optional[Sequence[Tuple[str, str]]] = None,
     cluster_key: str = "clusters",
-    velocity_key: str = "velocity_umap",
+    embedding_key: str = "X_umap",
+    velocity_key: str = "velot_velocity_umap"
 ) -> dict:
     """
     Compute and print a summary of velocity metrics.
@@ -1096,10 +3738,16 @@ def summary(
         k: float(np.mean(v)) if len(v) > 0 else float("nan")
         for k, v in iccoh_raw.items()
     }
+    iccoh_median = {
+        k: float(np.median(v)) if len(v) > 0 else float("nan")
+        for k, v in iccoh_raw.items()
+    }
     iccoh_global = float(np.nanmean(list(iccoh_means.values()))) if iccoh_means else float("nan")
+    iccoh_global_median = float(np.nanmedian(list(iccoh_median.values()))) if iccoh_median else float("nan")
 
     results["iccoh"] = iccoh_raw
     results["iccoh_mean"] = iccoh_global
+    results["iccoh_median"] = iccoh_global_median
 
     print("=" * 50)
     print("VelOT Velocity Metrics")
@@ -1107,12 +3755,17 @@ def summary(
     print(f"\nInner-Cluster Coherence (mean: {iccoh_global:.3f}):")
     for cat in sorted(iccoh_means.keys()):
         print(f"  {str(cat):>25s}: {iccoh_means[cat]:.3f}")
+    
+    print(f"\nInner-Cluster Coherence (median: {iccoh_global_median:.3f}):")
+    for cat in sorted(iccoh_median.keys()):
+        print(f"  {str(cat):>25s}: {iccoh_median[cat]:.3f}")
 
     # CBDir — get raw scores
     if cluster_edges is not None:
         cbdir_raw = cross_boundary_correctness(
             adata, cluster_edges,
             cluster_key=cluster_key,
+            embedding_key=embedding_key,
             velocity_key=velocity_key,
             return_raw=True,
         )
@@ -1120,10 +3773,16 @@ def summary(
             k: float(np.mean(v)) if len(v) > 0 else float("nan")
             for k, v in cbdir_raw.items()
         }
+        cbdir_median = {
+            k: float(np.median(v)) if len(v) > 0 else float("nan")
+            for k, v in cbdir_raw.items()
+        }
         cbdir_global = float(np.nanmean(list(cbdir_means.values()))) if cbdir_means else float("nan")
+        cbdir_global_median = float(np.nanmedian(list(cbdir_median.values()))) if cbdir_median else float("nan")
 
         results["cbdir"] = cbdir_raw
         results["cbdir_mean"] = cbdir_global
+        results["cbdir_median"] = cbdir_global_median
 
         print(f"\nCross-Boundary Correctness (mean: {cbdir_global:.3f}):")
         for (u, v) in cbdir_raw.keys():
@@ -1132,7 +3791,7 @@ def summary(
     print("=" * 50)
     return results
 
-=== file: pl.py ===
+=== file: velot/pl.py ===
 """
 velot.pl — Plotting
 ===================
@@ -1180,7 +3839,8 @@ def dataset_overview_simple(
     basis: str = "umap",
     title: Optional[str] = "",
     show: bool = True,
-    save: Optional[str] = None,
+    save: bool = False,
+    save_path: Optional[str] = None,
     figsize: tuple = (5,5),
     inframe: bool = False,
     out_legend: bool = False
@@ -1208,6 +3868,15 @@ def dataset_overview_simple(
     matplotlib Figure.
     """
 
+    # extra_width = 0
+    # if out_legend:
+    #     extra_width += 0
+
+    # fig, axes = plt.subplots(
+    #     figsize=(figsize[0] + extra_width, figsize[1]),
+    #     constrained_layout=True
+    # )
+
     fig, axes = plt.subplots(figsize=figsize)
 
     if inframe:
@@ -1218,7 +3887,6 @@ def dataset_overview_simple(
         )
     
     else:
-        print("Plotting in scanpy")
         sc.pl.embedding(
             adata, basis=basis, color=color,
             ax=axes, show=False, title="",
@@ -1239,23 +3907,33 @@ def dataset_overview_simple(
 
 
             # Create new legend (customized)
-            axes.legend(
+            # axes.legend(
+            #     handles,
+            #     labels,
+            #     # title="Sample",          # or color name
+            #     fontsize=14,             # bigger text
+            #     # title_fontsize=11,
+            #     markerscale=1.5,           # bigger markers
+            #     frameon=False,
+            #     **args
+            # )
+
+            fig.legend(
                 handles,
                 labels,
-                # title="Sample",          # or color name
-                fontsize=14,             # bigger text
-                # title_fontsize=11,
-                markerscale=1.5,           # bigger markers
-                frameon=False,
-                **args
+                loc="center left",
+                bbox_to_anchor=(1.02, 0.5),
+                fontsize=14,
+                markerscale=1.5,
+                frameon=False
             )
 
     axes.set_title(title, fontsize=18, fontfamily="sans serif")
     add_umap_axis(axes)
 
-    plt.tight_layout()
-    _finish(fig, show=show, save=save)
-    return fig
+    # plt.tight_layout()
+    _finish(fig, show=show, save=save, save_path=save_path)
+    return fig if not show else None
 
 def dataset_overview(
     adata: AnnData,
@@ -1344,8 +4022,8 @@ def dataset_overview(
     add_umap_axis(axes[1])
 
     plt.tight_layout()
-    _finish(fig, show=show, save=save)
-    return fig
+    _finish(fig, show=show, save=save, save_path=save_path)
+    return fig if not show else None
 
 def add_umap_axis(ax, basis='umap', pos=(0, 0), length=0.2, fontsize=10):
     """
@@ -1442,7 +4120,8 @@ def windows(
     title: str = None,
     frameon: bool = False,
     show: bool = True,
-    save: Optional[str] = None,
+    save: bool = False,
+    save_path: Optional[str] = None,
     figsize_per_panel: tuple = (3, 3),
 ) -> plt.Figure:
     """
@@ -1585,8 +4264,8 @@ def windows(
     )
 
     plt.tight_layout()
-    _finish(fig, show=show, save=save)
-    return fig
+    _finish(fig, show=show, save=save, save_path=save_path)
+    return fig if not show else None
 
 
 def window_transport(
@@ -1610,7 +4289,8 @@ def window_transport(
     cluster_key: Optional[str] = None,
     frameon: bool = False,
     show: bool = True,
-    save: Optional[str] = None,
+    save: bool = False,
+    save_path: Optional[str] = None,
     figsize: tuple = (4,4),
 ) -> plt.Figure:
     """
@@ -1912,8 +4592,8 @@ def window_transport(
         ax.axis("off")
 
     plt.tight_layout()
-    _finish(fig, show=show, save=save)
-    return fig
+    _finish(fig, show=show, save=save, save_path=save_path)
+    return fig if not show else None
 
 
 def velocity_stream(
@@ -1923,7 +4603,8 @@ def velocity_stream(
     velocity_key: str = "velot_velocity",
     title: Optional[str] = "VelOT velocity",
     show: bool = True,
-    save: Optional[str] = None,
+    save: bool = False,
+    save_path: Optional[str] = None,
     figsize: tuple = (4,4),
     **kwargs,
 ) -> plt.Figure:
@@ -1982,8 +4663,8 @@ def velocity_stream(
         if title is not None:
             ax.set_title(title, fontsize=18, fontfamily="sans serif")
         add_umap_axis(ax)
-        _finish(fig, show=show, save=save)
-        return fig
+        _finish(fig, show=show, save=save, save_path=save_path)
+        return fig if not show else None
     else:
         return velocity_quiver(
             adata, color=color, basis=basis, velocity_key=velocity_key,
@@ -2003,7 +4684,8 @@ def velocity_quiver(
     arrow_alpha: float = 0.7,
     normalize_arrows: bool = False,
     show: bool = True,
-    save: Optional[str] = None,
+    save: bool = False,
+    save_path: Optional[str] = None,
     figsize: tuple = (7, 6),
     **scatter_kwargs,
 ) -> plt.Figure:
@@ -2236,14 +4918,15 @@ def velocity_quiver(
     add_umap_axis(ax, basis=basis)
 
     plt.tight_layout()
-    _finish(fig, show=show, save=save)
-    return fig
+    _finish(fig, show=show, save=save, save_path=save_path)
+    return fig if not show else None
 
 def confidence(
     adata: AnnData,
     basis: str = "umap",
     show: bool = True,
-    save: Optional[str] = None,
+    save: bool = False,
+    save_path: Optional[str] = None,
     figsize: tuple = (7, 6),
 ) -> plt.Figure:
     """
@@ -2268,15 +4951,16 @@ def confidence(
     )
 
     plt.tight_layout()
-    _finish(fig, show=show, save=save)
-    return fig
+    _finish(fig, show=show, save=save, save_path=save_path)
+    return fig if not show else None
 
 
 def training_curves(
     adata: AnnData,
     vertical: bool=False,
     show: bool = True,
-    save: Optional[str] = None,
+    save: bool = False,
+    save_path: Optional[str] = None,
     figsize: tuple = (10, 4),
 ) -> plt.Figure:
     """
@@ -2312,13 +4996,14 @@ def training_curves(
 
     # fig.suptitle("VelOT smoothing training", fontsize=13, fontweight="bold")
     plt.tight_layout()
-    _finish(fig, show=show, save=save)
-    return fig
+    _finish(fig, show=show, save=save, save_path=save_path)
+    return fig if not show else None
 
 def training_curves_single(
     adata: AnnData,
     show: bool = True,
-    save: Optional[str] = None,
+    save: bool = False,
+    save_path: Optional[str] = None,
     figsize: tuple = (7,7),
 ) -> plt.Figure:
     """
@@ -2345,15 +5030,16 @@ def training_curves_single(
         axes.set_yscale("log")
     
     axes.legend(loc="lower right")
-    _finish(fig, show=show, save=save)
-    return fig
+    _finish(fig, show=show, save=save, save_path=save_path)
+    return fig if not show else None
 
 
 def spatial_clusters(
     adata: AnnData,
     basis: str = "umap",
     show: bool = True,
-    save: Optional[str] = None,
+    save: bool = False,
+    save_path: Optional[str] = None,
     figsize: tuple = (7, 6),
 ) -> plt.Figure:
     """
@@ -2377,8 +5063,8 @@ def spatial_clusters(
     )
 
     plt.tight_layout()
-    _finish(fig, show=show, save=save)
-    return fig
+    _finish(fig, show=show, save=save, save_path=save_path)
+    return fig if not show else None
 
 
 def velocity_comparison(
@@ -2388,7 +5074,8 @@ def velocity_comparison(
     color: str = "clusters",
     basis: str = "umap",
     show: bool = True,
-    save: Optional[str] = None,
+    save: bool = False,
+    save_path: Optional[str] = None,
     figsize_per_panel: tuple = (6, 5),
 ) -> plt.Figure:
     """
@@ -2453,8 +5140,8 @@ def velocity_comparison(
         adata.obsm["velocity_umap"] = backup
 
     plt.tight_layout()
-    _finish(fig, show=show, save=save)
-    return fig
+    _finish(fig, show=show, save=save, save_path=save_path)
+    return fig if not show else None
 
 
 # =====================================================================
@@ -2462,17 +5149,22 @@ def velocity_comparison(
 # =====================================================================
 
 
-def _finish(fig: plt.Figure, show: bool, save: Optional[str]):
+def _finish(fig: plt.Figure, show: bool, save: bool, save_path: Optional[str]):
     """Handle show/save logic for all plot functions."""
-    if save is not None:
-        path = Path(save)
+    if save:
+        # Fallback if they say save=True but forget to give a path
+        if save_path is None:
+            save_path = "velot_figure.png" 
+            print(f"Warning: save=True but no save_path provided. Saving to {save_path}")
+            
+        path = Path(save_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(path, dpi=300, bbox_inches="tight")
 
     if show:
         plt.show()
-    else:
-        plt.close(fig)
+    
+    plt.close()
 
 
 def gridsearch_results(
@@ -2481,7 +5173,8 @@ def gridsearch_results(
     param_x: Optional[str] = None,
     param_hue: Optional[str] = None,
     show: bool = True,
-    save: Optional[str] = None,
+    save: bool = False,
+    save_path: Optional[str] = None,
     figsize: tuple = (12, 5),
 ) -> plt.Figure:
     """
@@ -2585,8 +5278,8 @@ def gridsearch_results(
 
     fig.suptitle("VelOT Grid Search Results", fontsize=14, fontweight="bold")
     plt.tight_layout()
-    _finish(fig, show=show, save=save)
-    return fig
+    _finish(fig, show=show, save=save, save_path=save_path)
+    return fig if not show else None
 
 def trajectories(
     adata: AnnData,
@@ -2612,8 +5305,9 @@ def trajectories(
     title: Optional[str] = None,
     ax: Optional[plt.Axes] = None,
     show: bool = True,
-    save: Optional[str] = None,
-    figsize: tuple = (8, 7),
+    save: bool = False,
+    save_path: Optional[str] = None,
+    figsize: tuple = (5,5),
     **scanpy_kwargs,
 ) -> plt.Axes:
     """
@@ -2767,6 +5461,7 @@ def trajectories(
             **scanpy_kwargs,
         )
     except Exception:
+        print("Trajectories on manual scatter...")
         # Fallback: manual scatter
         coords_key = f"X_{basis}"
         if coords_key in adata.obsm:
@@ -2886,7 +5581,7 @@ def trajectories(
     # ------------------------------------------------------------------
     if owns_figure:
         plt.tight_layout()
-        _finish(fig, show=show, save=save)
+        _finish(fig, show=show, save=save, save_path=save_path)
 
     return ax
 
@@ -2894,7 +5589,8 @@ def trajectories(
 def fate_summary(
     adata: AnnData,
     show: bool = True,
-    save: Optional[str] = None,
+    save: bool = False,
+    save_path: Optional[str] = None,
     figsize: tuple = (8, 4),
 ) -> plt.Figure:
     """
@@ -2971,8 +5667,8 @@ def fate_summary(
 
     fig.suptitle("VelOT trajectory fate analysis", fontsize=13, fontweight="bold")
     plt.tight_layout()
-    _finish(fig, show=show, save=save)
-    return fig
+    _finish(fig, show=show, save=save, save_path=save_path)
+    return fig if not show else None
 
 
 def flow_simulation(
@@ -2990,7 +5686,8 @@ def flow_simulation(
     frameon: bool = False,
     title: Optional[str] = None,
     show: bool = True,
-    save: Optional[str] = None,
+    save: bool = False,
+    save_path: Optional[str] = None,
     figsize: tuple = (9, 8),
 ) -> plt.Figure:
     """
@@ -3149,8 +5846,8 @@ def flow_simulation(
         ax.axis("off")
 
     plt.tight_layout()
-    _finish(fig, show=show, save=save)
-    return fig
+    _finish(fig, show=show, save=save, save_path=save_path)
+    return fig if not show else None
 
 
 def metric_summary(
@@ -3162,7 +5859,8 @@ def metric_summary(
     median_color: str = "black",
     frameon: bool = True,
     show: bool = True,
-    save: Optional[str] = None,
+    save: bool = False,
+    save_path: Optional[str] = None,
 ) -> plt.Figure:
     """
     Box plots of ICCoh and CBDir metrics from a precomputed summary.
@@ -3349,10 +6047,435 @@ def metric_summary(
 
     # fig.suptitle("VelOT Velocity Metrics", fontsize=24, fontfamily="sans serif")
     plt.tight_layout()
-    _finish(fig, show=show, save=save)
+    _finish(fig, show=show, save=save, save_path=save_path)
+    return fig if not show else None
+
+import os
+from typing import List
+def benchmark_comparison(
+    output_dir: str = "benchmark_results",
+    models: Optional[List[str]] = None,
+    models_order: Optional[List[str]] = None,
+    datasets: Optional[List[str]] = None,
+    metrics: Optional[List[str]] = None,
+    detail: str = "aggregated",
+    show_timing: bool = True,
+    figsize_per_panel: tuple = (5, 4),
+    show: bool = True,
+    save: Optional[str] = None,
+) -> plt.Figure:
+    """
+    Compare benchmark results across models and datasets.
+
+    Parameters
+    ----------
+    output_dir
+        Directory with saved JSON benchmark files.
+    models
+        Which models to include. None for all.
+    datasets
+        Which datasets to include. None for all.
+    metrics
+        Which metrics to plot (e.g., ``["cbdir", "iccoh"]``).
+        None to auto-detect all metrics with per-cell data.
+    detail
+        Level of detail for the metric panels:
+
+        - ``"aggregated"`` (default): one boxplot per model, pooling
+          all groups (edges/clusters) and all datasets together.
+        - ``"per_dataset"``: one boxplot per (model, dataset),
+          grouped by dataset, colored by model. Pools all groups
+          within each dataset.
+        - ``"per_group"``: one boxplot per (model, dataset, group),
+          showing every edge/cluster individually, organized by
+          dataset, colored by model.
+    show_timing
+        Whether to include a timing comparison panel.
+    figsize_per_panel
+        Size of each subplot.
+    show
+        Display the plot.
+    save
+        Path to save.
+
+    Returns
+    -------
+    matplotlib Figure.
+
+    Examples
+    --------
+    Default — one box per model, everything pooled::
+
+        velot.pl.benchmark_comparison("benchmark_results")
+
+    Per dataset — see how each model performs on each dataset::
+
+        velot.pl.benchmark_comparison(
+            "benchmark_results", detail="per_dataset",
+        )
+
+    Full detail — every edge/cluster visible, grouped by dataset::
+
+        velot.pl.benchmark_comparison(
+            "benchmark_results", detail="per_group",
+            figsize_per_panel=(10, 4),
+        )
+    """
+    from velot.benchmark import load_benchmarks, load_benchmarks_per_group
+
+    if detail not in ("aggregated", "per_dataset", "per_group"):
+        raise ValueError(
+            f"detail must be 'aggregated', 'per_dataset', or "
+            f"'per_group', got '{detail}'."
+        )
+
+    df_summary = load_benchmarks(output_dir, models, datasets)
+    df_cells = load_benchmarks_per_group(output_dir, models, datasets)
+
+    if len(df_summary) == 0:
+        raise ValueError(f"No benchmark results found in '{output_dir}'.")
+
+    # Auto-detect metrics
+    if metrics is None:
+        if len(df_cells) > 0:
+            metrics = sorted(df_cells["metric"].unique().tolist())
+        else:
+            metrics = []
+
+    n_metric_panels = len(metrics)
+    n_panels = n_metric_panels + (1 if show_timing else 0)
+
+    if n_panels == 0:
+        raise ValueError("No metrics or timing data to plot.")
+
+    fig, axes = plt.subplots(
+        1, n_panels,
+        figsize=(figsize_per_panel[0] * n_panels, figsize_per_panel[1]),
+        squeeze=False,
+    )
+    axes = axes.flatten()
+
+    # Color palette for models
+    if models_order is not None:
+        all_models = models_order
+    else:
+        all_models = df_summary["model"].unique()
+    n_models = len(all_models)
+    # colors = plt.cm.Set2(np.linspace(0, 1, max(n_models, 1)))
+    colors = plt.cm.Set2(np.arange(0, n_models))
+    model_colors = dict(zip(all_models, colors))
+
+    # ── Metric panels ───────────────────────────────────────────
+    for i, metric_name in enumerate(metrics):
+        ax = axes[i]
+        df_m = df_cells[df_cells["metric"] == metric_name]
+
+        if len(df_m) == 0:
+            ax.set_title(f"{metric_name}\n(no data)")
+            continue
+
+        if detail == "aggregated":
+            _plot_aggregated(ax, df_m, all_models, model_colors)
+
+        elif detail == "per_dataset":
+            _plot_per_dataset(ax, df_m, all_models, model_colors)
+
+        elif detail == "per_group":
+            _plot_per_group(ax, df_m, all_models, model_colors)
+
+        ax.set_title(metric_name.upper(), fontsize=12, fontweight="bold")
+        ax.set_ylabel(metric_name)
+        ax.grid(axis="y", alpha=0.3)
+
+    # ── Timing bar chart ────────────────────────────────────────
+    if show_timing and "time_total" in df_summary.columns:
+        ax = axes[n_metric_panels]
+        _plot_timing(ax, df_summary, all_models, model_colors)
+
+    # ── Legend ──────────────────────────────────────────────────
+    handles = [
+        plt.Rectangle(
+            (0, 0), 1, 1,
+            facecolor=model_colors[m],
+            edgecolor="black",
+            alpha=0.7,
+        )
+        for m in all_models
+    ]
+    fig.legend(
+        handles,
+        all_models,
+        loc="upper center",
+        ncol=min(len(all_models), 6),
+        fontsize=12,
+        frameon=False,
+        bbox_to_anchor=(0.5, 1.02),
+    )
+
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+
+    if save:
+        os.makedirs(os.path.dirname(save) or ".", exist_ok=True)
+        fig.savefig(save, dpi=150, bbox_inches="tight")
+    if show:
+        plt.show()
+
     return fig
 
-=== file: pp.py ===
+
+def _plot_aggregated(ax, df_m, all_models, model_colors):
+    """
+    One boxplot per model, pooling all groups and datasets.
+
+    Layout:
+        | model_A | model_B | model_C |
+    """
+    for m_idx, model in enumerate(all_models):
+        data = df_m.loc[df_m["model"] == model, "value"].dropna().values
+
+        if len(data) == 0:
+            continue
+
+        bp = ax.boxplot(
+            [data],
+            positions=[m_idx],
+            widths=0.6,
+            patch_artist=True,
+            showfliers=False,
+            medianprops=dict(color="black", linewidth=1.5),
+        )
+        bp["boxes"][0].set_facecolor(model_colors[model])
+        bp["boxes"][0].set_alpha(0.7)
+
+        # Overlay points (subsample if too many)
+        _overlay_points(ax, data, m_idx, model_colors[model])
+
+    ax.set_xticks(range(len(all_models)))
+    ax.set_xticklabels(all_models, rotation=30, ha="right", fontsize=12)
+
+
+def _plot_per_dataset(ax, df_m, all_models, model_colors):
+    """
+    Grouped by dataset, one boxplot per model within each group.
+    Pools all edges/clusters within each dataset.
+
+    Layout:
+        |-- dataset_1 --|-- dataset_2 --|
+        | mA  mB  mC    | mA  mB  mC   |
+    """
+    dataset_list = df_m["dataset"].unique()
+    n_models = len(all_models)
+    group_width = n_models + 1.5
+
+    tick_positions = []
+    tick_labels = []
+
+    for d_idx, dataset in enumerate(dataset_list):
+        base_pos = d_idx * group_width
+        df_d = df_m[df_m["dataset"] == dataset]
+
+        for m_idx, model in enumerate(all_models):
+            data = df_d.loc[
+                df_d["model"] == model, "value"
+            ].dropna().values
+
+            if len(data) == 0:
+                continue
+
+            pos = base_pos + m_idx
+            bp = ax.boxplot(
+                [data],
+                positions=[pos],
+                widths=0.6,
+                patch_artist=True,
+                showfliers=False,
+                medianprops=dict(color="black", linewidth=1.5),
+            )
+            bp["boxes"][0].set_facecolor(model_colors[model])
+            bp["boxes"][0].set_alpha(0.7)
+
+            _overlay_points(ax, data, pos, model_colors[model])
+
+        tick_positions.append(base_pos + (n_models - 1) / 2)
+        tick_labels.append(dataset)
+
+    ax.set_xticks(tick_positions)
+    ax.set_xticklabels(tick_labels, rotation=30, ha="right", fontsize=12)
+
+    # Vertical separators between datasets
+    for d_idx in range(1, len(dataset_list)):
+        sep_x = d_idx * group_width - group_width / 2 + (n_models - 1) / 2
+        ax.axvline(sep_x, color="gray", linewidth=0.5, linestyle="--",
+                    alpha=0.5)
+
+
+def _plot_per_group(ax, df_m, all_models, model_colors):
+    """
+    Full detail: one boxplot per (model, group), organized by dataset.
+
+    Layout:
+        |-------- dataset_1 ---------|-------- dataset_2 ---------|
+        |-- grp1 --|-- grp2 --|      |-- grp1 --|-- grp3 --|      |
+        | mA mB mC | mA mB mC |     | mA mB mC | mA mB mC |
+    """
+    dataset_list = df_m["dataset"].unique()
+    n_models = len(all_models)
+    model_width = 1.0
+    group_gap = 1.5      # extra space between groups within a dataset
+    dataset_gap = 3.0    # extra space between datasets
+
+    current_pos = 0.0
+    tick_positions = []
+    tick_labels = []
+    dataset_centers = []
+    dataset_boundaries = []
+
+    for d_idx, dataset in enumerate(dataset_list):
+        df_d = df_m[df_m["dataset"] == dataset]
+        groups = df_d["group"].unique()
+
+        if d_idx > 0:
+            dataset_boundaries.append(current_pos - dataset_gap / 2)
+            current_pos += dataset_gap
+
+        dataset_start = current_pos
+
+        for g_idx, group in enumerate(groups):
+            if g_idx > 0:
+                current_pos += group_gap
+
+            group_start = current_pos
+
+            for m_idx, model in enumerate(all_models):
+                data = df_d.loc[
+                    (df_d["group"] == group) & (df_d["model"] == model),
+                    "value",
+                ].dropna().values
+
+                if len(data) == 0:
+                    current_pos += model_width
+                    continue
+
+                pos = current_pos
+                bp = ax.boxplot(
+                    [data],
+                    positions=[pos],
+                    widths=0.7,
+                    patch_artist=True,
+                    showfliers=False,
+                    medianprops=dict(color="black", linewidth=1.5),
+                )
+                bp["boxes"][0].set_facecolor(model_colors[model])
+                bp["boxes"][0].set_alpha(0.7)
+
+                current_pos += model_width
+
+            # Group label at center of this group's boxplots
+            group_center = (group_start + current_pos - model_width) / 2
+            # Shorten long edge names
+            label = group.replace(" → ", "→\n") if " → " in group else group
+            tick_positions.append(group_center)
+            tick_labels.append(label)
+
+        dataset_end = current_pos - model_width
+        dataset_centers.append((dataset_start + dataset_end) / 2)
+
+    ax.set_xticks(tick_positions)
+    ax.set_xticklabels(tick_labels, rotation=45, ha="right", fontsize=12)
+
+    # Dataset separators and labels
+    for boundary in dataset_boundaries:
+        ax.axvline(boundary, color="black", linewidth=1.0, linestyle="-",
+                    alpha=0.4)
+
+    # Dataset names as secondary labels above x-axis
+    y_min, y_max = ax.get_ylim()
+    for center, dataset in zip(dataset_centers, dataset_list):
+        ax.text(
+            center, y_min - (y_max - y_min) * 0.5,
+            dataset,
+            ha="center", va="top",
+            fontsize=12, fontweight="bold",
+            transform=ax.transData,
+        )
+
+
+def _plot_timing(ax, df_summary, all_models, model_colors):
+    """Grouped bar chart of execution time."""
+    dataset_list = df_summary["dataset"].unique()
+    x = np.arange(len(dataset_list))
+    n_models = len(all_models)
+    bar_width = 0.8 / max(n_models, 1)
+
+    for m_idx, model in enumerate(all_models):
+        times = []
+        for dataset in dataset_list:
+            mask = (
+                (df_summary["model"] == model)
+                & (df_summary["dataset"] == dataset)
+            )
+            t = df_summary.loc[mask, "time_total"].values
+            times.append(t[0] if len(t) > 0 else 0)
+
+        offset = (m_idx - n_models / 2 + 0.5) * bar_width
+        bars = ax.bar(
+            x + offset,
+            times,
+            bar_width * 0.9,
+            label=model,
+            color=model_colors[model],
+            edgecolor="black",
+            linewidth=0.5,
+        )
+
+        for bar, t in zip(bars, times):
+            if t > 0:
+                label = f"{t:.1f}s" if t < 60 else f"{t / 60:.1f}m"
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + 0.1,
+                    label,
+                    ha="center", va="bottom",
+                    fontsize=12, rotation=0,
+                )
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(
+        dataset_list, rotation=30, ha="right", fontsize=12
+    )
+    ax.set_ylabel("Time (seconds)")
+    ax.set_title("Execution time", fontsize=12, fontweight="bold")
+
+    # Log scale if there's a large spread
+    times_all = df_summary["time_total"].dropna()
+    if len(times_all) > 1 and times_all.max() / max(times_all.min(), 0.1) > 10:
+        ax.set_yscale("log")
+    ax.grid(axis="y", alpha=0.3)
+
+
+def _overlay_points(ax, data, position, color, max_points=200):
+    """Overlay jittered individual points on a boxplot."""
+    n_show = min(len(data), max_points)
+    if n_show < len(data):
+        show_data = np.random.RandomState(42).choice(
+            data, n_show, replace=False
+        )
+    else:
+        show_data = data
+
+    jitter = np.random.RandomState(42).normal(0, 0.08, len(show_data))
+    ax.scatter(
+        np.full(len(show_data), position) + jitter,
+        show_data,
+        s=8,
+        c=[color],
+        edgecolors="black",
+        linewidths=0.2,
+        zorder=5,
+        alpha=0.5,
+    )
+
+=== file: velot/pp.py ===
 """
 velot.pp — Preprocessing
 ========================
@@ -3754,7 +6877,7 @@ def _normalize_01(pt: np.ndarray) -> np.ndarray:
 
     return (pt - pt_min) / (pt_max - pt_min)
 
-=== file: tl.py ===
+=== file: velot/tl.py ===
 """
 velot.tl — Tools
 ================
@@ -3815,6 +6938,8 @@ def build_windows(
     overlap_fraction: float = 0.5,
     min_window_size: int = 20,
     spatial_key: Optional[str] = None,
+    tail_handling: str = "force",  # NEW: "force", "drop", or "split"
+    tail_threshold: int = 10,      # NEW: Used only if tail_handling="drop"
     random_state: int = 42,
 ) -> AnnData:
     """
@@ -3924,14 +7049,46 @@ def build_windows(
 
         # Create windows
         windows = []
+        last_start = 0
         for start in range(0, len(sorted_indices) - local_ws + 1, local_step):
             windows.append(sorted_indices[start : start + local_ws])
+            last_start = start
 
-        # Ensure the tail end is included
-        if (len(windows) > 0
-                and windows[-1][-1] != sorted_indices[-1]
-                and len(sorted_indices) >= local_ws):
-            windows.append(sorted_indices[-local_ws:])
+        if len(windows) > 0:
+            next_start = last_start + local_step
+            remaining_count = len(sorted_indices) - next_start
+
+            if remaining_count > 0:
+                if tail_handling == "split" and remaining_count >= 2:
+                    # Distribute the remaining cells across two full-sized 
+                    # windows to smooth the overlap and add an extra OT step
+                    step_B = remaining_count // 2
+                    
+                    end_A = len(sorted_indices) - step_B
+                    start_A = max(0, end_A - local_ws)
+                    
+                    end_B = len(sorted_indices)
+                    start_B = max(0, end_B - local_ws)
+                    
+                    w_A = sorted_indices[start_A : end_A]
+                    w_B = sorted_indices[start_B : end_B]
+                    
+                    # Avoid duplicates if they perfectly overlap
+                    if not np.array_equal(windows[-1], w_A):
+                        windows.append(w_A)
+                    if not np.array_equal(windows[-1], w_B):
+                        windows.append(w_B)
+
+                elif tail_handling == "drop":
+                    # Only append the final forced window if the remaining
+                    # cells meet the user's noise threshold
+                    if remaining_count >= tail_threshold:
+                        windows.append(sorted_indices[-local_ws:])
+
+                else: 
+                    # "force" (Default behavior): Force the last window 
+                    # to capture the tail, regardless of overlap spike
+                    windows.append(sorted_indices[-local_ws:])
 
         # Pair consecutive windows
         for w_src, w_tgt in zip(windows[:-1], windows[1:]):
@@ -4109,9 +7266,9 @@ def compute_ot_velocity(
     confidence = counts / max_count
 
     if basis == "X_pca":
-        adata.obsm["velot_velocity_pca"] = V
+        adata.obsm["velot_velocity_raw_pca"] = V
     elif basis == "X_umap":
-        adata.obsm["velot_velocity_umap"] = V
+        adata.obsm["velot_velocity_raw_umap"] = V
     else:
         raise NotImplemented
 
@@ -4181,8 +7338,8 @@ class _VelocityNet(nn.Module):
 
 def smooth_velocity(
     adata: AnnData,
-    basis: str = "X_pca",
-    velocity_key: str = "velot_velocity_pca",
+    basis: str = "pca",
+    velocity_key: str = "velot_velocity_raw",
     n_epochs: int = 200,
     hidden_dim: int = 128,
     lr: float = 1e-3,
@@ -4251,21 +7408,21 @@ def smooth_velocity(
     adata with smoothed velocity.
     """    
     _check_fields(
-        adata, obsm_keys=[basis, velocity_key],
+        adata, obsm_keys=[f"X_{basis}", velocity_key],
         obs_keys=["velot_confidence"],
     )
 
     torch.manual_seed(random_state)
     np.random.seed(random_state)
 
-    X_np = adata.obsm[basis].astype(np.float32)
+    X_np = adata.obsm[f"X_{basis}"].astype(np.float32)
     V_np = adata.obsm[velocity_key].astype(np.float32)
     conf_np = adata.obs["velot_confidence"].values.astype(np.float32)
     pt_np = adata.obs["pseudotime"].values.astype(np.float32)
 
     n_cells, dim = X_np.shape
 
-    adata.obsm[f"{velocity_key}_raw"] = V_np.copy()
+    # adata.obsm[f"{velocity_key}_raw"] = V_np.copy()
 
     knn_indices = _build_knn_index(X_np, k=k_smooth)
 
@@ -4423,7 +7580,7 @@ def smooth_velocity(
             V_smooth.append(net(X_chunk, pt_chunk).cpu().numpy())
         V_smooth = np.concatenate(V_smooth, axis=0)
 
-    adata.obsm[velocity_key] = V_smooth
+    adata.obsm[f"velot_velocity_{basis}"] = V_smooth
 
     adata.uns["velot_smoothing"] = {
         "n_epochs": n_epochs,
@@ -4526,11 +7683,84 @@ def query_velocity(
 # =====================================================================
 # 4. PROJECTION TO UMAP
 # =====================================================================
+    
+def project_to_embedding(
+    adata: AnnData,
+    velocity_key: str = "velot_velocity_pca",
+    velocity_key_umap: str = "velot_velocity_umap",
+    basis_pca: str = "X_pca",
+    basis_embedding: str = "X_umap",
+    n_neighbors: int = 30,
+) -> AnnData:
+    """
+    Project velocity from PCA space to any 2D embedding space for visualization.
+
+    Uses a local linear approximation: for each cell, the Jacobian
+    of the PCA→2D (UMAP, TSNE...) mapping is estimated from its KNN neighborhood
+    via least-squares, and the PCA velocity is transformed accordingly.
+
+    Note: UMAP is for visualization only. The velocity in PCA space
+    (``adata.obsm['velot_velocity']``) is the primary output.
+
+    Parameters
+    ----------
+    adata
+        Must contain PCA and UMAP embeddings, and computed velocity.
+
+    Returns
+    -------
+    adata with ``adata.obsm['velocity_umap']`` populated.
+    """
+    _check_fields(
+        adata,
+        obsm_keys=[velocity_key, basis_pca, basis_embedding],
+    )
+
+    if basis_embedding == "X_tsne":
+        import warnings
+        warnings.warn(
+            "t-SNE distorts global distances. Velocity arrows show "
+            "local directions correctly but arrow lengths and "
+            "cross-cluster directions may be misleading. "
+            "Consider using UMAP for velocity visualization.",
+            UserWarning,
+        )
+
+    X_pca = adata.obsm[basis_pca]
+    X_umap = adata.obsm[basis_embedding]
+    V_pca = adata.obsm[velocity_key]
+
+    n_cells = X_pca.shape[0]
+
+    # Build KNN in PCA space for the local linear approximation
+    knn_indices = _build_knn_index(X_pca, k=n_neighbors)
+
+    V_umap = np.zeros_like(X_umap)
+
+    for i in range(n_cells):
+        nbrs = knn_indices[i]
+
+        # Local displacement in PCA and UMAP
+        dX = X_pca[nbrs] - X_pca[i]       # (k, d_pca)
+        dU = X_umap[nbrs] - X_umap[i]     # (k, 2)
+
+        # Least-squares: dU ≈ dX @ A  →  A = (dX^T dX)^{-1} dX^T dU
+        A, _, _, _ = np.linalg.lstsq(dX, dU, rcond=None)
+
+        # Project PCA velocity through the local Jacobian
+        V_umap[i] = V_pca[i] @ A
+
+    adata.obsm[velocity_key_umap] = V_umap
+
+    print(f"  Velocity projected to 2D embedding {basis_embedding} ({n_cells} cells)")
+
+    return adata
 
 
 def project_to_umap(
     adata: AnnData,
     velocity_key: str = "velot_velocity_pca",
+    velocity_key_umap: str = "velot_velocity_umap",
     basis_pca: str = "X_pca",
     basis_umap: str = "X_umap",
     n_neighbors: int = 30,
@@ -4583,7 +7813,7 @@ def project_to_umap(
         # Project PCA velocity through the local Jacobian
         V_umap[i] = V_pca[i] @ A
 
-    adata.obsm["velot_velocity_umap"] = V_umap
+    adata.obsm[velocity_key_umap] = V_umap
 
     print(f"  Velocity projected to UMAP ({n_cells} cells)")
 
@@ -4605,6 +7835,8 @@ def velocity(
     overlap_fraction: float = 0.5,
     min_window_size: int = 20,
     spatial_key: Optional[str] = None,
+    tail_handling: str = "force",
+    tail_threshold: int = 10,
     # OT params
     reg: float = 0.05,
     lambda_time: float = 1.0,
@@ -4619,6 +7851,7 @@ def velocity(
     use_pseudotime: bool = True,
     # Output
     project_umap: bool = True,
+    project_basis: str = "X_umap",
     random_state: int = 42,
     verbose: bool = True,
 ) -> AnnData:
@@ -4680,6 +7913,8 @@ def velocity(
         overlap_fraction=overlap_fraction,
         min_window_size=min_window_size,
         spatial_key=spatial_key,
+        tail_handling=tail_handling,
+        tail_threshold=tail_threshold,
         random_state=random_state,
     )
 
@@ -4698,10 +7933,10 @@ def velocity(
     if smooth:
         if verbose:
             print("\n[3/4] Smoothing velocity field...")
-        v_key = "velot_velocity_pca" if basis == "X_pca" else "velot_velocity_umap"
+        v_key = "velot_velocity_raw_pca" if basis == "X_pca" else "velot_velocity_raw_umap"
         smooth_velocity(
             adata,
-            basis=basis,
+            basis=basis.split("X_")[1],
             velocity_key=v_key,
             n_epochs=n_epochs,
             hidden_dim=hidden_dim,
@@ -4718,10 +7953,13 @@ def velocity(
             print("\n[3/4] Smoothing: SKIPPED")
 
     # Step 4: Project to UMAP
-    if project_umap and "X_umap" in adata.obsm:
+    if project_umap and project_basis in adata.obsm:
+        basis_name = project_basis.split("X_")[1]
         if verbose:
             print("\n[4/4] Projecting to UMAP...")
-        project_to_umap(adata)
+        project_to_umap(adata, "velot_velocity_raw_pca", f"velot_velocity_raw_{basis_name}", basis_umap=project_basis)
+        if smooth:
+            project_to_umap(adata, "velot_velocity_pca", f"velot_velocity_{basis_name}", basis_umap=project_basis)
     else:
         if verbose:
             print("\n[4/4] UMAP projection: SKIPPED")

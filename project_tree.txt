@@ -1,0 +1,30 @@
+.
+├── export_project.py
+├── project_tree.txt
+├── velot_project_export.txt
+├── pyproject.toml
+├── README.md
+├── .gitignore
+├── article                               # reproducibility for the article
+│   ├── real_bonemarrow_dataset.py        # modules for each of the panels
+│   ├── real_dendate_dataset.py
+│   ├── real_erythroid_dataset.py
+│   ├── real_hindbrain_dataset.py
+│   ├── real_pancreas_dataset.py
+│   ├── synthetic_bifurcation_dataset.py
+│   ├── synthetic_helicoid_dataset.py
+│   ├── data                              # all .h5ad datasets (real and synthetic) 
+│   ├── figures
+│   └── benchmark                         # reproducibility for the benchmark panel
+│       ├── benchmark_results             # .json results
+│       ├── real                          # modules for running the experiments per model and per real datasets
+│       ├── synthetic                     # modules for running the experiments per model and per synthetic datasets
+│       └── benchmark_figures.ipynb       # benchmark panel using the benchmark_results .json files
+└── velot                                 # modules for the velot pipeline
+    ├── benchmark.py
+    ├── datasets.py
+    ├── __init__.py
+    ├── metrics.py
+    ├── pl.py
+    ├── pp.py
+    └── tl.py

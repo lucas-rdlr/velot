@@ -3,23 +3,19 @@ import argparse
 from pathlib import Path
 
 DEFAULT_IGNORE = {
-    '.git', '__pycache__', '.venv', 'venv', '.env',
-    'node_modules', '.pytest_cache', '.vscode',
-    'data', 'docs', 'documents', 'experiments',
-    'mera', 'export_project.py', 'project_export.txt', 'notes.txt', 'velot_export.txt'
+    '.git', '.gitignore', '__pycache__', '.venv', 'venv', '.env',
+    'notebooks', 'article', 'export_project.py', 'velot.egg-info'
 }
 
 DEFAULT_IGNORE_EXTENSIONS = {
     '.pyc', '.pyo', '.pyd', '.so', '.o', '.ipynb', '.txt'
 }
 
-
 def should_ignore(path, ignore_names, ignore_exts):
     return (
         any(part in ignore_names for part in path.parts)
         or path.suffix in ignore_exts
     )
-
 
 def export_project(base_path, output_file, ignore_names, ignore_exts):
     base_path = Path(base_path).resolve()
@@ -39,7 +35,6 @@ def export_project(base_path, output_file, ignore_names, ignore_exts):
 
     print(f"✓ Project exported to {output_file}")
 
-
 def main():
     parser = argparse.ArgumentParser(
         description="Export project files into a single text file."
@@ -53,7 +48,7 @@ def main():
 
     parser.add_argument(
         "-o", "--output",
-        default="project_export.txt",
+        default="velot_project_export.txt",
         help="Output file name"
     )
 
@@ -82,7 +77,6 @@ def main():
         ignore_names=ignore_names,
         ignore_exts=ignore_exts
     )
-
 
 if __name__ == "__main__":
     main()

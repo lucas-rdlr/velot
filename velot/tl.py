@@ -38,11 +38,15 @@ except ImportError:
         "Install it with: pip install POT"
     )
 
-import torch
-import torch.nn as nn
-import torch.optim as optim
-
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+try:
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    _HAS_TORCH = True
+except ImportError:
+    _HAS_TORCH = False
+    DEVICE = None
 
 
 # =====================================================================
@@ -526,7 +530,16 @@ def smooth_velocity(
     Returns
     -------
     adata with smoothed velocity.
-    """    
+    """
+
+    if not _HAS_TORCH:
+        raise ImportError(
+            "PyTorch is required for velocity smoothing."
+            "Install with: pip3 install torch"
+        )
+    else:
+        print(f"Found torch compatible version. Running on {DEVICE} device")
+
     _check_fields(
         adata, obsm_keys=[f"X_{basis}", velocity_key],
         obs_keys=["velot_confidence"],
@@ -1512,6 +1525,15 @@ def compute_trajectories(
             direction="backward",
         )
     """
+
+    if not _HAS_TORCH:
+        raise ImportError(
+            "PyTorch is required for velocity smoothing."
+            "Install with: pip3 install torch"
+        )
+    else:
+        print(f"Found torch compatible version. Running on {DEVICE} device")
+
     _check_fields(adata, obsm_keys=[basis, velocity_key])
 
     if direction not in ("forward", "backward", "both"):
