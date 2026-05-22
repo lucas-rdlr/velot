@@ -1,18 +1,23 @@
-# VelOT — Velocity via Optimal Transport
+# VelOT — RNA Velocity via Optimal Transport
 
 <p align="center">
-  <img src="article/figures/figure 1/panel1.png" width="800">
+  <img src="https://img.shields.io/badge/Python-3.10%E2%80%933.11-informational.svg" />
+  <img src="https://img.shields.io/badge/AnnData-.h5ad%20native-blueviolet.svg" />
+  <img src="https://img.shields.io/badge/Scanpy-compatible-brightgreen.svg" />
 </p>
 
 <p align="center">
-  <a href="[https://opensource.org/licenses/MIT](https://opensource.org/licenses/MIT)">
-    <img src="[https://img.shields.io/badge/License-MIT-blue.svg](https://img.shields.io/badge/License-MIT-blue.svg)" alt="License: MIT">
+  <a href="LICENSE">
+    <img alt="License" src="https://img.shields.io/badge/License-MIT-green.svg">
   </a>
-  <a href="[https://www.python.org/downloads/](https://www.python.org/downloads/)">
-    <img src="[https://img.shields.io/badge/python-](https://img.shields.io/badge/python-)≥3.9-blue.svg" alt="Python ≥3.9">
+  <a href="https://pypi.org/project/h5adify/">
+    <img alt="PyPI" src="https://img.shields.io/pypi/v/h5adify.svg">
   </a>
-  <a href="[https://velot.readthedocs.io](https://velot.readthedocs.io)">
-    <img src="[https://readthedocs.org/projects/velot/badge/?version=latest](https://readthedocs.org/projects/velot/badge/?version=latest)" alt="Documentation">
+  <a href="https://test.pypi.org/project/h5adify/">
+    <img alt="TestPyPI" src="https://img.shields.io/badge/TestPyPI-available-orange.svg">
+  </a>
+  <a href="https://velot.readthedocs.io">
+    <img alt="Documentation" src="https://readthedocs.org/projects/velot/badge/?version=latest">
   </a>
 </p>
 
@@ -26,7 +31,9 @@ matrices.
 > **Paper:** *VelOT: Velocity via Optimal Transport for kinetic-free RNA velocity estimation*
 > — [Preprint (coming soon)](#citation)
 
----
+<p align="center">
+  <img src="article/figures/figure 1/panel1.png" width="800">
+</p>
 
 ## Highlights
 
@@ -36,11 +43,9 @@ matrices.
 - **Fast** — full pipeline runs in seconds to minutes, significantly faster than dynamical scVelo or other deep-learning methods.
 - **Scanpy-compatible** — follows the `pp` / `tl` / `pl` API convention. Works with standard AnnData objects.
 
----
-
 ## Installation
 
-VelOT requires Python ≥ 3.9. We recommend a fresh conda environment:
+VelOT requires Python ≥ 3.10. We recommend a fresh conda environment:
 
 ```bash
 # Create environment and install PyTorch first
@@ -63,8 +68,6 @@ pip install -e .
 > CUDA version for their system. See [pytorch.org](https://pytorch.org)
 > for installation options.
 
----
-
 ## Quick Start
 
 ```python
@@ -82,8 +85,6 @@ velot.tl.velocity(adata)
 # Visualize
 velot.pl.velocity_stream(adata, color="clusters")
 ```
-
----
 
 ## Pipeline Overview
 
@@ -126,8 +127,6 @@ velot.pl.confidence(adata)
 velot.pl.training_curves(adata)
 ```
 
----
-
 ## Evaluation
 
 VelOT includes built-in metrics for velocity quality assessment:
@@ -155,8 +154,6 @@ velot.pl.metric_summary(results)
 - **ICCoh** (Inner-Cluster Coherence) — consistency of velocity directions within clusters.
 - **CBDir** (Cross-Boundary Direction Correctness) — whether velocities at cluster boundaries point in the expected direction.
 
----
-
 ## Trajectory Analysis
 
 ```python
@@ -171,8 +168,6 @@ velot.tl.compute_trajectories(
 velot.pl.trajectories(adata, color="clusters")
 velot.pl.fate_summary(adata)
 ```
-
----
 
 ## Benchmarking
 
@@ -198,8 +193,6 @@ from velot.benchmark import benchmark_dotplot
 benchmark_dotplot("benchmark_results")
 ```
 
----
-
 ## Built-in Datasets
 
 ```python
@@ -214,8 +207,6 @@ adata = velot.datasets.synthetic_bifurcation()
 adata = velot.datasets.synthetic_cycle()
 ```
 
----
-
 ## Documentation
 
 Full API documentation: [velot.readthedocs.io](https://velot.readthedocs.io)
@@ -223,8 +214,6 @@ Full API documentation: [velot.readthedocs.io](https://velot.readthedocs.io)
 For the detailed mathematical methodology, see the
 [Methods section](https://velot.readthedocs.io/en/latest/methodology.html)
 of the documentation or the accompanying paper.
-
----
 
 ## Reproducibility
 
@@ -243,8 +232,6 @@ python article/benchmark/real/pancreas_scvelo_dynamic.py
 jupyter notebook article/benchmark/benchmark_figures.ipynb
 ```
 
----
-
 ## Citation
 
 If you use VelOT in your research, please cite:
@@ -253,89 +240,16 @@ If you use VelOT in your research, please cite:
 @article{velot2025,
   title   = {VelOT: Velocity via Optimal Transport for kinetic-free
              RNA velocity estimation},
-  author  = {de la Roche, Lucas},
+  author  = {Rincon de la Rosa, Lucas},
   journal = {bioRxiv},
-  year    = {2025},
+  year    = {2026},
   doi     = {10.1101/2025.XX.XX.XXXXXX}
 }
 ```
 
----
-
 ## License
 
 VelOT is released under the [MIT License](LICENSE).
-```
-
----
-
-## 2. `pyproject.toml`
-
-```toml
-[build-system]
-requires = ["setuptools>=64", "wheel"]
-build-backend = "setuptools.build_meta"
-
-[project]
-name = "velot"
-version = "0.1.0"
-description = "Velocity via Optimal Transport — kinetic-free RNA velocity estimation"
-readme = "README.md"
-license = {text = "MIT"}
-requires-python = ">=3.9"
-authors = [
-    {name = "Lucas de la Roche"},
-]
-keywords = [
-    "rna-velocity",
-    "single-cell",
-    "optimal-transport",
-    "bioinformatics",
-    "transcriptomics",
-]
-classifiers = [
-    "Development Status :: 4 - Beta",
-    "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Topic :: Scientific/Engineering :: Bio-Informatics",
-    "Operating System :: OS Independent",
-]
-dependencies = [
-    "numpy>=1.21",
-    "scipy>=1.7",
-    "pandas>=1.3",
-    "anndata>=0.8",
-    "scanpy>=1.9",
-    "scikit-learn>=1.0",
-    "matplotlib>=3.5",
-    "POT>=0.8",
-    "scvelo>=0.2.4",
-    "tqdm>=4.60",
-    "ipywidgets",
-]
-
-[project.optional-dependencies]
-docs = [
-    "sphinx>=5.0",
-    "sphinx-rtd-theme>=1.0",
-    "nbsphinx>=0.8",
-    "sphinx-autodoc-typehints>=1.18",
-]
-plot = ["seaborn>=0.11"]
-dev = ["pytest", "ruff"]
-
-[project.urls]
-Documentation = "[https://velot.readthedocs.io](https://velot.readthedocs.io)"
-Repository = "[https://github.com/lucas-rdlr/velot](https://github.com/lucas-rdlr/velot)"
-Issues = "[https://github.com/lucas-rdlr/velot/issues](https://github.com/lucas-rdlr/velot/issues)"
-
-[tool.setuptools.packages.find]
-include = ["velot*"]
 ```
 
 > **Note on torch**: Not listed in dependencies since it requires

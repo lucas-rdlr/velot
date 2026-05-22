@@ -5,10 +5,25 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "velot"
 version = "0.1.0"
-description = "Optimal Transport RNA Velocity with Flow Matching Smoothing"
+description = "RNA Velocity via Optimal Transport"
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.9"
+requires-python = ">=3.10"
+authors = [
+    {name = "Lucas Rincon de la Rosa", email = "lucas.rincondelarosa@icm-institute.org"},
+]
+keywords = ["rna-velocity", "single-cell", "optimal-transport", "bioinformatics"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
 dependencies = [
     "numpy>=1.21",
     "scipy>=1.7",
@@ -24,7 +39,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+docs = ["sphinx", "sphinx-rtd-theme", "nbsphinx", "sphinx-autodoc-typehints"]
 plot = ["seaborn>=0.11"]
+dev = ["pytest", "ruff"]
+
+[project.urls]
+Documentation = "https://velot.readthedocs.io"
+Repository = "https://github.com/lucas-rdlr/velot"
+Paper = "https://doi.org/..."
 
 [tool.setuptools.packages.find]
 include = ["velot*"]
