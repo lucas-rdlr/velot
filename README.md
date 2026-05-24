@@ -250,7 +250,6 @@ If you use VelOT in your research, please cite:
 ## License
 
 VelOT is released under the [MIT License](LICENSE).
-```
 
 > **Note on torch**: Not listed in dependencies since it requires
 > platform-specific installation (CUDA version). Users install it
