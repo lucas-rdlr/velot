@@ -1,12 +1,15 @@
+import sys
+import os
+from pathlib import Path
+os.chdir(Path(__file__).resolve().parent)
+ROOT = Path(__file__).resolve().parents[3]
+sys.path.append(str(ROOT))
+
 import deepvelo
 import scanpy as sc
 import scvelo as scv
 import velot
 from velot.benchmark import BenchmarkTimer, save_benchmark
-
-import os
-from pathlib import Path
-os.chdir(Path(__file__).resolve().parent)
 
 # ── Config ──────────────────────────────────────────────────────
 MODEL_NAME = "deepvelo"
@@ -28,25 +31,10 @@ timer = BenchmarkTimer()
 
 # ── Load ────────────────────────────────────────────────────────
 with timer("load"):
-    adata = sc.read("/home/user/Documents/velot/article/data/Synthetic/synthetic_linear.h5ad")
+    adata = sc.read("../../data/Synthetic/synthetic_linear_processed.h5ad")
 
 # ── Preprocess ──────────────────────────────────────────────────
 with timer("preprocess"):
-    milestones = adata.uns['traj_progressions']['from'].values + '->' + adata.uns['traj_progressions']['to'].values
-    for i in range(len(milestones)):
-        
-        state = milestones[i]
-        
-        if state == 'sA->sB':
-            milestones[i] = 'A'
-        
-        elif state == 'sB->sC':
-            milestones[i] = 'B'
-        
-        elif state == 'sC->sEndC':
-            milestones[i] = 'C'
-    adata.obs['milestone'] = milestones
-
     adata.layers["spliced"] = adata.layers["counts_spliced"]
     adata.layers["unspliced"] = adata.layers["counts_unspliced"]
 
@@ -68,11 +56,13 @@ with timer("evaluate"):
         embedding_key=f"X_{basis}",
         velocity_key=f"velocity_{basis}"
     )
+    scv.tl.velocity_graph(adata, n_jobs=1)
 
 # ── Save ────────────────────────────────────────────────────────
 print(timer)
 
 save_benchmark(
+    adata=adata,
     results=results,
     timer=timer,
     model_name=MODEL_NAME,

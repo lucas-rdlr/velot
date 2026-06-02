@@ -28,29 +28,10 @@ timer = BenchmarkTimer()
 
 # ── Load ────────────────────────────────────────────────────────
 with timer("load"):
-    adata = sc.read("/home/user/Documents/velot/article/data/Synthetic/synthetic_bifurcation.h5ad")
+    adata = sc.read("../../data/Synthetic/synthetic_bifurcation_processed.h5ad")
 
 # ── Preprocess ──────────────────────────────────────────────────
 with timer("preprocess"):
-    milestones = adata.uns['traj_progressions']['from'].values + '->' + adata.uns['traj_progressions']['to'].values
-    for i in range(len(milestones)):
-        
-        state = milestones[i]
-        if state == 'sA->sB' or state == 'sB->sBmid':
-            milestones[i] = 'A'
-        
-        elif state == 'sBmid->sC':
-            milestones[i] = 'B'
-        
-        elif state == 'sBmid->sD':
-            milestones[i] = 'C'
-        
-        elif state == 'sC->sEndC':
-            milestones[i] = 'D'
-        elif state == 'sD->sEndD': 
-            milestones[i] = 'E'
-    adata.obs['milestone'] = milestones
-
     adata.layers["spliced"] = adata.layers["counts_spliced"]
     adata.layers["unspliced"] = adata.layers["counts_unspliced"]
 
@@ -82,6 +63,7 @@ with timer("evaluate"):
 print(timer)
 
 save_benchmark(
+    adata=adata,
     results=results,
     timer=timer,
     model_name=MODEL_NAME,

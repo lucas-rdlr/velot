@@ -30,34 +30,10 @@ timer = BenchmarkTimer()
 
 # ── Load ────────────────────────────────────────────────────────
 with timer("load"):
-    adata = sc.read("/home/user/Documents/velot/article/data/Synthetic/synthetic_bifurcation.h5ad")
+    adata = sc.read("../../data/Synthetic/synthetic_bifurcation_processed.h5ad")
 
 # ── Preprocess ──────────────────────────────────────────────────
 with timer("preprocess"):
-    milestones = adata.uns['traj_progressions']['from'].values + '->' + adata.uns['traj_progressions']['to'].values
-    for i in range(len(milestones)):
-        
-        state = milestones[i]
-        if state == 'sA->sB' or state == 'sB->sBmid':
-            milestones[i] = 'A'
-        
-        elif state == 'sBmid->sC':
-            milestones[i] = 'B'
-        
-        elif state == 'sBmid->sD':
-            milestones[i] = 'C'
-        
-        elif state == 'sC->sEndC':
-            milestones[i] = 'D'
-        elif state == 'sD->sEndD': 
-            milestones[i] = 'E'
-    adata.obs['milestone'] = milestones
-
-    sc.pp.normalize_total(adata)
-    sc.pp.log1p(adata)
-
-    velot.pp.pca(adata, n_pcs=n_pcs)
-    sc.pp.neighbors(adata, n_neighs)
     velot.pp.pseudotime(adata, root_cluster="A", root_cell=166)
     adata.obs[clusters_key] = adata.obs[clusters_key].astype("category")
     adata.obs["clusters_id"] = adata.obs[clusters_key].cat.codes
@@ -92,6 +68,7 @@ with timer("evaluate"):
 print(timer)
 
 save_benchmark(
+    adata=adata,
     results=results,
     timer=timer,
     model_name=MODEL_NAME,

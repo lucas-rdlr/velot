@@ -30,39 +30,10 @@ timer = BenchmarkTimer()
 
 # ── Load ────────────────────────────────────────────────────────
 with timer("load"):
-    adata = sc.read("/home/user/Documents/velot/article/data/Synthetic/synthetic_trifurcation.h5ad")
+    adata = sc.read("../../data/Synthetic/synthetic_trifurcation_processed.h5ad")
 
 # ── Preprocess ──────────────────────────────────────────────────
 with timer("preprocess"):
-    milestones = adata.uns['traj_progressions']['from'].values + '->' + adata.uns['traj_progressions']['to'].values
-    for i in range(len(milestones)):
-        state = milestones[i]
-        
-        if state == 'sA->sB':
-            milestones[i] = 'A'
-        
-        elif state == 'sB->sC' or state == 'sC->sCmid':
-            milestones[i] = 'B'
-        
-        elif state == 'sCmid->sD':
-            milestones[i] = 'C'
-        
-        elif state == 'sCmid->sE':
-            milestones[i] = 'D'
-            
-        elif state == 'sCmid->sF': 
-            milestones[i] = 'E'
-            
-        elif state == 'sD->sEndD': 
-            milestones[i] = 'F'
-            
-        elif state == 'sE->sEndE': 
-            milestones[i] = 'G'
-            
-        elif state == 'sF->sEndF': 
-            milestones[i] = 'H'
-    adata.obs['milestone'] = milestones
-
     adata.layers["spliced"] = adata.layers["counts_spliced"]
     adata.layers["unspliced"] = adata.layers["counts_unspliced"]
 
@@ -94,6 +65,7 @@ with timer("evaluate"):
 print(timer)
 
 save_benchmark(
+    adata=adata,
     results=results,
     timer=timer,
     model_name=MODEL_NAME,

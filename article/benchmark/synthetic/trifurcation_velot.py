@@ -32,46 +32,11 @@ timer = BenchmarkTimer()
 
 # ── Load ────────────────────────────────────────────────────────
 with timer("load"):
-    adata = sc.read("/home/user/Documents/velot/article/data/Synthetic/synthetic_trifurcation.h5ad")
+    adata = sc.read("../../data/Synthetic/synthetic_trifurcation_processed.h5ad")
 
 # ── Preprocess ──────────────────────────────────────────────────
 with timer("preprocess"):
-    milestones = adata.uns['traj_progressions']['from'].values + '->' + adata.uns['traj_progressions']['to'].values
-    for i in range(len(milestones)):
-        state = milestones[i]
-        
-        if state == 'sA->sB':
-            milestones[i] = 'A'
-        
-        elif state == 'sB->sC' or state == 'sC->sCmid':
-            milestones[i] = 'B'
-        
-        elif state == 'sCmid->sD':
-            milestones[i] = 'C'
-        
-        elif state == 'sCmid->sE':
-            milestones[i] = 'D'
-            
-        elif state == 'sCmid->sF': 
-            milestones[i] = 'E'
-            
-        elif state == 'sD->sEndD': 
-            milestones[i] = 'F'
-            
-        elif state == 'sE->sEndE': 
-            milestones[i] = 'G'
-            
-        elif state == 'sF->sEndF': 
-            milestones[i] = 'H'
-    adata.obs['milestone'] = milestones
-
-    sc.pp.normalize_total(adata)
-    sc.pp.log1p(adata)
-
-    velot.pp.pca(adata, n_pcs=n_pcs)
-    sc.pp.neighbors(adata, n_neighs)
     velot.pp.pseudotime(adata, root_cluster="A", root_cell=9)
-    velot.pp.umap(adata)
     adata.obs["milestone"] = adata.obs["milestone"].astype("category")
     adata.obs["clusters_id"] = adata.obs["milestone"].cat.codes
 
@@ -105,6 +70,7 @@ with timer("evaluate"):
 print(timer)
 
 save_benchmark(
+    adata=adata,
     results=results,
     timer=timer,
     model_name=MODEL_NAME,
