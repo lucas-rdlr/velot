@@ -8,6 +8,7 @@ from typing import Optional, Dict, List, Any
 import numpy as np
 import pandas as pd
 from scipy.stats import mannwhitneyu
+from anndata import AnnData
 
 import matplotlib.pyplot as plt
 
@@ -71,6 +72,7 @@ class _TimerContext:
 
 
 def save_benchmark(
+    adata: AnnData,
     results: Dict[str, Any],
     timer: BenchmarkTimer,
     model_name: str,
@@ -101,6 +103,7 @@ def save_benchmark(
     Path to the saved JSON file.
     """
     os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(os.path.join(output_dir, "data"), exist_ok=True)
 
     record = {
         "model": model_name,
@@ -111,10 +114,12 @@ def save_benchmark(
         "metrics": _to_serializable(results),
     }
 
-    filename = f"{model_name}_{dataset_name}.json"
-    filepath = os.path.join(output_dir, filename)
+    filename = f"{model_name}_{dataset_name}"
+    filepath = os.path.join(output_dir, f"{filename}.json")
     with open(filepath, "w") as f:
         json.dump(record, f, indent=2)
+    
+    adata.write(os.path.join(output_dir, "data", f"{filename}.h5ad"))
 
     print(f"  Saved: {filepath}")
     return filepath
@@ -398,25 +403,23 @@ def _draw_significance(
     all_visible = []
     for _, (_, d) in model_positions.items():
         if len(d) > 0:
-            # Match boxplot whiskers (showfliers=False):
-            # upper whisker = min(max, Q3 + 1.5*IQR)
             q1, q3 = np.percentile(d, [25, 75])
             iqr = q3 - q1
-            upper_whisker = min(np.max(d), q3 + 1.5 * iqr)
-            all_visible.append(upper_whisker)
+            lower_whisker = max(np.min(d), q1 - 1.5 * iqr)
+            all_visible.append(lower_whisker)
 
     if not all_visible:
         return None
 
-    y_top = max(all_visible)
-    y_min = ax.get_ylim()[0]
-    y_range = y_top - y_min if y_top > y_min else 1.0
+    y_bottom = min(all_visible)
+    y_max = ax.get_ylim()[1]
+    y_range = y_max - y_bottom if y_max > y_bottom else 1.0
 
     h = y_range * 0.03       # bracket tick height
     gap = y_range * 0.06     # vertical gap between stacked brackets
-    margin = y_range * 0.08  # initial margin above data
+    margin = y_range * 0.08  # initial margin below data
 
-    max_y = y_top
+    min_y = y_bottom
     bracket_idx = 0
 
     # Sort other models by position so brackets don't cross
@@ -440,44 +443,43 @@ def _draw_significance(
 
         sig_str = _significance_str(pval)
 
-        # Bracket y position
-        y_bar = y_top + margin + bracket_idx * gap
+        # Bracket y position (below the data)
+        y_bar = y_bottom - margin - bracket_idx * gap
 
-        # Draw bracket: two ticks and a horizontal bar
+        # Draw bracket: two ticks pointing UP and a horizontal bar
         left = min(ref_pos, other_pos)
         right = max(ref_pos, other_pos)
 
         ax.plot(
             [left, left, right, right],
-            [y_bar - h, y_bar, y_bar, y_bar - h],
+            [y_bar + h, y_bar, y_bar, y_bar + h],
             lw=0.8,
             color="black",
             clip_on=False,
         )
 
-        # Significance text
-        color = "black" if sig_str == "ns" else "black"
+        # Significance text (below the bar)
         weight = "normal" if sig_str == "ns" else "bold"
         ax.text(
             (left + right) / 2,
-            y_bar + h * 0.3,
+            y_bar - h * 0.3,
             sig_str,
             ha="center",
-            va="bottom",
+            va="top",
             fontsize=fontsize,
-            color=color,
+            color="black",
             fontweight=weight,
         )
 
-        max_y = max(max_y, y_bar + h * 2)
+        min_y = min(min_y, y_bar - h * 2)
         bracket_idx += 1
 
     # Expand y-axis to fit brackets
     if bracket_idx > 0:
         current_ylim = ax.get_ylim()
-        ax.set_ylim(current_ylim[0], max_y + y_range * 0.05)
+        ax.set_ylim(min_y - y_range * 0.05, current_ylim[1])
 
-    return max_y
+    return min_y
 
 def _plot_aggregated(ax, df_m, all_models, model_colors, reference_model=None):
     """
@@ -562,7 +564,7 @@ def _plot_per_dataset(ax, df_m, all_models, model_colors, datasets_order=None, r
         tick_labels.append(dataset)
 
     ax.set_xticks(tick_positions)
-    ax.set_xticklabels(tick_labels, rotation=30, ha="right", fontsize=9)
+    ax.set_xticklabels(tick_labels, fontsize=12) #rotation=30, ha="right",
 
     # Vertical separators between datasets
     for d_idx in range(1, len(dataset_list)):
@@ -861,6 +863,7 @@ def benchmark_comparison(
 
         ax.set_title(metric_name.upper(), fontsize=12, fontweight="bold")
         ax.set_ylabel(metric_name)
+        ax.set_ylim(-1.05, 1.05)
         ax.grid(axis="y", alpha=0.3)
 
     # ── Timing ──────────────────────────────────────────────────
@@ -891,7 +894,7 @@ def benchmark_comparison(
         labels,
         loc="upper center",
         ncol=min(len(all_models), 6),
-        fontsize=10,
+        fontsize=12,
         frameon=False,
         bbox_to_anchor=(0.5, 1.02),
     )
@@ -900,11 +903,152 @@ def benchmark_comparison(
 
     if save:
         os.makedirs(os.path.dirname(save) or ".", exist_ok=True)
-        fig.savefig(save, dpi=150, bbox_inches="tight")
+        fig.savefig(save, dpi=300, bbox_inches="tight")
     if show:
         plt.show()
 
     return fig
+
+
+def benchmark_comparison_individual(
+    output_dir: str = "benchmark_results",
+    models: Optional[List[str]] = None,
+    models_order: Optional[List[str]] = None,
+    datasets: Optional[List[str]] = None,
+    datasets_order: Optional[List[str]] = None,
+    metrics: Optional[List[str]] = None,
+    detail: str = "aggregated",
+    reference_model: Optional[str] = "velot",
+    show_significance: bool = True,
+    show_timing: bool = True,
+    figsize: tuple = (6, 4),
+    ylim_timing: Optional[int] = None,
+    save: bool = False,
+    save_path: str = None,
+    save_prefix: str = "benchmark_boxplots",
+    save_legend: bool = False,
+    show: bool = True,
+):
+
+    df_summary = load_benchmarks(output_dir, models, datasets)
+    df_cells = load_benchmarks_per_group(output_dir, models, datasets)
+
+    if len(df_summary) == 0:
+        raise ValueError(f"No benchmark results found in '{output_dir}'.")
+
+    # Resolve reference model
+    ref = None
+    if show_significance and reference_model is not None:
+        available_models = df_summary["model"].unique()
+        if reference_model in available_models:
+            ref = reference_model
+
+    # Auto-detect metrics
+    if metrics is None:
+        if len(df_cells) > 0:
+            metrics = sorted(df_cells["metric"].unique().tolist())
+        else:
+            metrics = []
+
+    if models_order is not None:
+        all_models = models_order
+    else:
+        all_models = df_summary["model"].unique()
+    n_models = len(all_models)
+
+    cmap = plt.get_cmap("Set2")
+    colors = [cmap(0), cmap(1), cmap(2), cmap(3), cmap(5)]
+    model_colors = dict(zip(all_models, colors))
+
+    label_idx = 0
+
+    # ── Metric panels ───────────────────────────────────────────
+    for metric_name in metrics:
+        fig, ax = plt.subplots(figsize=figsize)
+        df_m = df_cells[df_cells["metric"] == metric_name]
+
+        if len(df_m) == 0:
+            ax.text(0.5, 0.5, f"{metric_name}\n(no data)",
+                    ha="center", va="center", transform=ax.transAxes)
+        else:
+            if detail == "aggregated":
+                _plot_aggregated(ax, df_m, all_models, model_colors, ref)
+            elif detail == "per_dataset":
+                _plot_per_dataset(ax, df_m, all_models, model_colors, datasets_order, ref)
+            elif detail == "per_group":
+                _plot_per_group(ax, df_m, all_models, model_colors, ref)
+
+        # ax.set_title(metric_name.upper(), fontsize=12, fontweight="bold")
+        ax.set_ylabel(metric_name, fontsize=12)
+        ax.set_ylim(-1.05, 1.05)
+        ax.grid(axis="y", alpha=0.3)
+        plt.tight_layout()
+
+        if save:
+            # os.makedirs(os.path.dirname(save) or ".", exist_ok=True)
+            fig.savefig(f"{save_path}/{save_prefix}_{chr(ord('a') + label_idx)}.png", dpi=300, bbox_inches="tight")
+        if show:
+            plt.show()
+        label_idx += 1
+
+        # fig.savefig(f"{save_prefix}_{chr(ord('a') + label_idx)}.png",
+        #             dpi=300, bbox_inches="tight", facecolor="white")
+        # if show:
+        #     plt.show()
+        # plt.close(fig)
+        # print(f"Saved {save_prefix}_{chr(ord('a') + label_idx)}.png")
+        # label_idx += 1
+
+    # ── Timing panel ────────────────────────────────────────────
+    if show_timing and "time_total" in df_summary.columns:
+        fig, ax = plt.subplots(figsize=figsize)
+        _plot_timing(ax, df_summary, all_models, model_colors, datasets_order)
+        if ylim_timing is not None:
+            ax.set_ylim(0, ylim_timing)
+        plt.tight_layout()
+
+        if save:
+            # os.makedirs(os.path.dirname(save) or ".", exist_ok=True)
+            fig.savefig(f"{save_path}/{save_prefix}_{chr(ord('a') + label_idx)}.png", dpi=300, bbox_inches="tight")
+        if show:
+            plt.show()
+    
+        # fig.savefig(f"{save_prefix}_{chr(ord('a') + label_idx)}.png",
+        #             dpi=300, bbox_inches="tight", facecolor="white")
+        # if show:
+        #     plt.show()
+        # plt.close(fig)
+        # print(f"Saved {save_prefix}_{chr(ord('a') + label_idx)}.png")
+
+    # ── Standalone legend ───────────────────────────────────────
+    if save_legend:
+        fig_leg = plt.figure(figsize=(0.1, 0.1))
+        handles = [
+            plt.Rectangle(
+                (0, 0), 1, 1,
+                facecolor=model_colors[m],
+                edgecolor="black",
+                alpha=0.7,
+            )
+            for m in all_models
+        ]
+        labels = list(all_models)
+        if ref is not None:
+            labels = [f"{m} (ref)" if m == ref else m for m in all_models]
+
+        leg = fig_leg.legend(
+            handles, labels,
+            loc="center",
+            ncol=len(all_models),
+            fontsize=12,
+            frameon=False,
+        )
+        fig_leg.canvas.draw()
+        bbox = leg.get_window_extent().transformed(fig_leg.dpi_scale_trans.inverted())
+        fig_leg.savefig(f"{save_path}/{save_prefix}_legend.png", dpi=300, bbox_inches=bbox)
+        # fig_leg.savefig(f"{save_prefix}_legend.png", dpi=300, bbox_inches=bbox, facecolor="white")
+        plt.close(fig_leg)
+        print(f"Saved {save_prefix}_legend.png")
 
 
 def _plot_timing(ax, df_summary, all_models, model_colors, datasets_order=None):
@@ -952,10 +1096,10 @@ def _plot_timing(ax, df_summary, all_models, model_colors, datasets_order=None):
 
     ax.set_xticks(x)
     ax.set_xticklabels(
-        dataset_list, rotation=30, ha="right", fontsize=12
+        dataset_list, fontsize=12
     )
     ax.set_ylabel("Time (seconds)")
-    ax.set_title("Execution time", fontsize=12, fontweight="bold")
+    # ax.set_title("Execution time", fontsize=12, fontweight="bold")
 
     # Log scale if there's a large spread
     times_all = df_summary["time_total"].dropna()
