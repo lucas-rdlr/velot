@@ -1,12 +1,15 @@
+import sys
+import os
+from pathlib import Path
+os.chdir(Path(__file__).resolve().parent)
+ROOT = Path(__file__).resolve().parents[3]
+sys.path.append(str(ROOT))
+
 import deepvelo
 import scanpy as sc
 import scvelo as scv
 import velot
 from velot.benchmark import BenchmarkTimer, save_benchmark
-
-import os
-from pathlib import Path
-os.chdir(Path(__file__).resolve().parent)
 
 # ── Config ──────────────────────────────────────────────────────
 MODEL_NAME = "deepvelo"
@@ -31,7 +34,7 @@ timer = BenchmarkTimer()
 
 # ── Load ────────────────────────────────────────────────────────
 with timer("load"):
-    adata = sc.read_h5ad("/home/user/Documents/velot/article/data/HindBrain/Hindbrain_GABA_Glio.h5ad")
+    adata = sc.read_h5ad("../../data/HindBrain/Hindbrain_GABA_Glio.h5ad")
 
 # ── Preprocess ──────────────────────────────────────────────────
 with timer("preprocess"):
@@ -58,6 +61,7 @@ with timer("evaluate"):
 print(timer)
 
 save_benchmark(
+    adata=adata,
     results=results,
     timer=timer,
     model_name=MODEL_NAME,

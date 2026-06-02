@@ -1,12 +1,15 @@
+import sys
+import os
+from pathlib import Path
+os.chdir(Path(__file__).resolve().parent)
+ROOT = Path(__file__).resolve().parents[3]
+sys.path.append(str(ROOT))
+
 import deepvelo
 import scanpy as sc
 import scvelo as scv
 import velot
 from velot.benchmark import BenchmarkTimer, save_benchmark
-
-import os
-from pathlib import Path
-os.chdir(Path(__file__).resolve().parent)
 
 # ── Config ──────────────────────────────────────────────────────
 MODEL_NAME = "deepvelo"
@@ -29,7 +32,7 @@ timer = BenchmarkTimer()
 
 # ── Load ────────────────────────────────────────────────────────
 with timer("load"):
-    adata = sc.read("/home/user/Documents/velot/article/data/Murine/raw.h5ad")
+    adata = sc.read("../../data/Murine/raw_umap.h5ad")
 
 # ── Preprocess ──────────────────────────────────────────────────
 with timer("preprocess"):
@@ -65,6 +68,7 @@ with timer("evaluate"):
 print(timer)
 
 save_benchmark(
+    adata=adata,
     results=results,
     timer=timer,
     model_name=MODEL_NAME,

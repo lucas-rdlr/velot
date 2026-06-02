@@ -31,10 +31,7 @@ timer = BenchmarkTimer()
 
 # ── Load ────────────────────────────────────────────────────────
 with timer("load"):
-    adata = sc.read(
-        "/home/user/Documents/velot/article/datasets/"
-        "endocrinogenesis_day15.5_preprocessed.h5ad"
-    )
+    adata = sc.read("../../datasets/endocrinogenesis_day15.5_preprocessed.h5ad")
 
 # ── Preprocess ──────────────────────────────────────────────────
 with timer("preprocess"):
@@ -72,6 +69,7 @@ with timer("evaluate"):
 print(timer)
 
 save_benchmark(
+    adata=adata,
     results=results,
     timer=timer,
     model_name=MODEL_NAME,

@@ -30,7 +30,7 @@ timer = BenchmarkTimer()
 
 # ── Load ────────────────────────────────────────────────────────
 with timer("load"):
-    adata = sc.read("/home/user/Documents/velot/article/data/Murine/raw.h5ad")
+    adata = sc.read("../../data/Murine/raw_umap.h5ad")
 
 # ── Preprocess ──────────────────────────────────────────────────
 with timer("preprocess"):
@@ -50,7 +50,6 @@ with timer("preprocess"):
     sc.pp.pca(adata, n_comps=n_pcs)
     sc.pp.neighbors(adata, n_pcs=n_neighs, n_neighbors=n_neighs)
     scv.pp.moments(adata, n_neighbors=None, n_pcs=None)
-    sc.tl.umap(adata)
 
 # ── Velocity ────────────────────────────────────────────────────
 with timer("velocity"):
@@ -79,6 +78,7 @@ with timer("evaluate"):
 print(timer)
 
 save_benchmark(
+    adata=adata,
     results=results,
     timer=timer,
     model_name=MODEL_NAME,

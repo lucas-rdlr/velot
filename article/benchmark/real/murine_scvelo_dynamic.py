@@ -28,7 +28,7 @@ timer = BenchmarkTimer()
 
 # ── Load ────────────────────────────────────────────────────────
 with timer("load"):
-    adata = sc.read("/home/user/Documents/velot/article/data/Murine/raw.h5ad")
+    adata = sc.read("../../data/Murine/raw_umap.h5ad")
 
 # ── Preprocess ──────────────────────────────────────────────────
 with timer("preprocess"):
@@ -71,6 +71,7 @@ with timer("evaluate"):
 print(timer)
 
 save_benchmark(
+    adata=adata,
     results=results,
     timer=timer,
     model_name=MODEL_NAME,
