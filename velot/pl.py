@@ -48,8 +48,8 @@ def dataset_overview_simple(
     save: bool = False,
     save_path: Optional[str] = None,
     figsize: tuple = (5,5),
+    ax: Optional[plt.Axes] = None,
     inframe: bool = False,
-    out_legend: bool = False
 ) -> plt.Figure:
     """
     Overview of the dataset: embedding colored by clusters and pseudotime.
@@ -73,83 +73,73 @@ def dataset_overview_simple(
     -------
     matplotlib Figure.
     """
-
-    # extra_width = 0
-    # if out_legend:
-    #     extra_width += 0
-
-    # fig, axes = plt.subplots(
-    #     figsize=(figsize[0] + extra_width, figsize[1]),
-    #     constrained_layout=True
-    # )
-
-    fig, axes = plt.subplots(figsize=figsize)
+    owns_figure = ax is None
+    if owns_figure:
+        fig, ax = plt.subplots(figsize=figsize)
 
     if inframe:
         scv.pl.scatter(
             adata, basis=basis, color=color,
-            ax=axes, show=False, title="",
+            ax=ax, show=False, title="",
             frameon=False, legend_loc="on data"
         )
     
     else:
         sc.pl.embedding(
             adata, basis=basis, color=color,
-            ax=axes, show=False, title="",
+            ax=ax, show=False, title="",
             frameon=False
         )
 
         # Get existing legend
-        leg = axes.get_legend()
+        leg = ax.get_legend()
         if leg is not None:
             handles = leg.legend_handles
             labels = [t.get_text() for t in leg.get_texts()]
             leg.remove()  # remove original legend
 
-            if out_legend:
-                args = {"loc": "center left", "bbox_to_anchor": (1,0.5)}
+            if owns_figure:
+                fig.legend(
+                    handles,
+                    labels,
+                    loc="center left",
+                    bbox_to_anchor=(1.02, 0.5),
+                    fontsize=14,
+                    markerscale=1.5,
+                    frameon=False
+                )
             else:
-                args = {"loc": "lower right"}
+                ax.legend(
+                    handles,
+                    labels,
+                    loc="center left",
+                    bbox_to_anchor=(1.02, 0.5),
+                    fontsize=14,
+                    markerscale=1.5,
+                    frameon=False
+                )
 
+    ax.set_title(title, fontsize=18, fontfamily="sans serif")
+    add_umap_axis(ax)
 
-            # Create new legend (customized)
-            # axes.legend(
-            #     handles,
-            #     labels,
-            #     # title="Sample",          # or color name
-            #     fontsize=14,             # bigger text
-            #     # title_fontsize=11,
-            #     markerscale=1.5,           # bigger markers
-            #     frameon=False,
-            #     **args
-            # )
+    if owns_figure:
+        _finish(fig, show=show, save=save, save_path=save_path)
+        return fig if not show else None
 
-            fig.legend(
-                handles,
-                labels,
-                loc="center left",
-                bbox_to_anchor=(1.02, 0.5),
-                fontsize=14,
-                markerscale=1.5,
-                frameon=False
-            )
-
-    axes.set_title(title, fontsize=18, fontfamily="sans serif")
-    add_umap_axis(axes)
-
-    # plt.tight_layout()
-    _finish(fig, show=show, save=save, save_path=save_path)
-    return fig if not show else None
+    return ax if not show else None
 
 def dataset_overview(
     adata: AnnData,
     color: str = "clusters",
     basis: str = "umap",
-    title: bool = True,
+    title: Optional[str] = "",
     show: bool = True,
-    vertical: bool = False,
-    save: Optional[str] = None,
-    figsize: tuple = (12, 5),
+    save: bool = False,
+    save_path: Optional[str] = None,
+    figsize: tuple = (5,5),
+    inframe: bool = False,
+    out_legend: bool = False,
+    vertical: bool = False
 ) -> plt.Figure:
     """
     Overview of the dataset: embedding colored by clusters and pseudotime.
@@ -174,10 +164,10 @@ def dataset_overview(
     matplotlib Figure.
     """
     if vertical:
-        fig, axes = plt.subplots(2, 1, figsize=figsize)
-    
+        nrows, ncols = 2, 1
     else:
-        fig, axes = plt.subplots(1, 2, figsize=figsize)
+        nrows, ncols = 1, 2
+    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols*figsize[0], nrows*figsize[1]))
 
     titles = ("", "")
     if title:
@@ -186,7 +176,7 @@ def dataset_overview(
     sc.pl.embedding(
         adata, basis=basis, color=color,
         ax=axes[0], show=False, title="",
-        frameon=False
+        frameon=False, legend_loc="on data"
     )
     axes[0].set_title(titles[0], fontsize=18, fontfamily="sans serif")
 
@@ -324,6 +314,7 @@ def windows(
     ncols: int = 4,
     point_size: int = 20,
     title: str = None,
+    pair_title: bool = False,
     frameon: bool = False,
     show: bool = True,
     save: bool = False,
@@ -434,7 +425,8 @@ def windows(
                 s=point_size, c="tab:green", alpha=0.6, label="overlap",
             )
 
-        # ax.set_title(f"Pair {pair_idx}", fontsize=18, fontfamily="sans serif")
+        if pair_title:
+            ax.set_title(f"Pair {pair_idx}", fontsize=18, fontfamily="sans serif")
 
         if not frameon:
             ax.axis("off")
@@ -444,7 +436,7 @@ def windows(
         # if panel_i == 0:
         #     ax.legend(fontsize=6, loc="lower right")
 
-    add_umap_axis(axes[0])
+        add_umap_axis(ax)
     
     # Turn off unused axes
     for j in range(n_show, len(axes)):
@@ -802,6 +794,10 @@ def window_transport(
     return fig if not show else None
 
 
+from typing import Optional, Sequence
+from anndata import AnnData
+import scvelo as scv
+
 def velocity_stream(
     adata: AnnData,
     color: str = "clusters",
@@ -812,6 +808,7 @@ def velocity_stream(
     save: bool = False,
     save_path: Optional[str] = None,
     figsize: tuple = (4,4),
+    ax: Optional[plt.Axes] = None,
     **kwargs,
 ) -> plt.Figure:
     """
@@ -843,39 +840,24 @@ def velocity_stream(
     -------
     matplotlib Figure.
     """
-    # if velocity_key not in adata.obsm:
-    #     raise ValueError(
-    #         f"'{velocity_key}' not found in adata.obsm. "
-    #         f"Run velot.tl.velocity() first."
-    #     )
-
-    if _HAS_SCVELO:
-        # scVelo expects the velocity key to follow its naming convention
-        # velocity_umap is already the standard name
+    owns_figure = ax is None
+    if owns_figure:
         fig, ax = plt.subplots(figsize=figsize)
-        # if basis == "umap" and "velocity_umap" not in adata.obsm:
-        #     adata.obsm["velocity_umap"] = adata.obsm["velot_velocity"]
-        # elif basis =="pca":
-        #     adata.obsm["velocity_pca"] = adata.obsm["velot_velocity"]
-        # else:
-        #     raise ValueError(
-        #         f"'{basis}' not implemented"
-        #     )
 
-        scv.pl.velocity_embedding_stream(
-            adata, basis=basis, vkey=velocity_key, color=color,
-            title="", ax=ax, show=False, **kwargs,
-        )
-        if title is not None:
-            ax.set_title(title, fontsize=18, fontfamily="sans serif")
-        add_umap_axis(ax)
+    scv.pl.velocity_embedding_stream(
+        adata, basis=basis, vkey=velocity_key, color=color,
+        title="", ax=ax, show=False, **kwargs,
+    )
+    if title is not None:
+        ax.set_title(title, fontsize=18, fontfamily="sans serif")
+    
+    add_umap_axis(ax)
+    if owns_figure:
         _finish(fig, show=show, save=save, save_path=save_path)
         return fig if not show else None
-    else:
-        return velocity_quiver(
-            adata, color=color, basis=basis, velocity_key=velocity_key,
-            title=title, show=show, save=save, figsize=figsize,
-        )
+
+    return ax if not show else None
+
 
 def velocity_quiver(
     adata: AnnData,
@@ -892,7 +874,8 @@ def velocity_quiver(
     show: bool = True,
     save: bool = False,
     save_path: Optional[str] = None,
-    figsize: tuple = (7, 6),
+    figsize: tuple = (5,5),
+    ax: Optional[plt.Axes] = None,
     **scatter_kwargs,
 ) -> plt.Figure:
     """
@@ -986,94 +969,24 @@ def velocity_quiver(
     if title == "auto":
         plot_title = f"VelOT velocity (quiver — {basis.upper()})"
 
-    # ------------------------------------------------------------------
-    # Base scatter: try scvelo → scanpy → matplotlib
-    # ------------------------------------------------------------------
-    ax = None
-
-    # --- Try scVelo ---
-    try:
-        ax = scv.pl.scatter(
-            adata,
-            basis=basis,
-            color=color,
-            size=spot_size,
-            title=plot_title,
-            frameon=False,
-            legend_loc="on data",
-            figsize=figsize,
-            show=False,
-            **scatter_kwargs,
-        )
-        # scv.pl.scatter can return a list if color is a list
-        if isinstance(ax, (list, np.ndarray)):
-            ax = ax[0]
-    except Exception:
-        ax = None
-
-    # --- Try scanpy ---
-    if ax is None:
-        try:
-            import scanpy as sc
-            ax = sc.pl.embedding(
-                adata,
-                basis=basis,
-                color=color,
-                title=plot_title,
-                figsize=figsize,
-                show=False,
-                return_fig=False,
-                **scatter_kwargs,
-            )
-            # sc.pl.embedding may return axes or None
-            if ax is None:
-                ax = plt.gca()
-            if isinstance(ax, (list, np.ndarray)):
-                ax = ax[0]
-        except Exception:
-            ax = None
-
-    # --- Fallback: plain matplotlib ---
-    if ax is None:
+    owns_figure = ax is None
+    if owns_figure:
         fig, ax = plt.subplots(figsize=figsize)
-        if color in adata.obs:
-            categories = adata.obs[color].astype("category")
-            codes = categories.cat.codes.values
-            n_cats = len(categories.cat.categories)
-            cmap = plt.cm.tab20 if n_cats <= 20 else plt.cm.tab20b
-            scatter = ax.scatter(
-                coords[:, 0], coords[:, 1],
-                s=10, c=codes, cmap=cmap, alpha=0.5, zorder=1,
-            )
-            # Manual legend
-            handles = []
-            for i, cat in enumerate(categories.cat.categories):
-                handles.append(
-                    plt.Line2D(
-                        [0], [0],
-                        marker="o", color="w",
-                        markerfacecolor=cmap(i / max(1, n_cats - 1)),
-                        markersize=6, label=cat,
-                    )
-                )
-            ax.legend(
-                handles=handles,
-                bbox_to_anchor=(1.02, 1),
-                loc="upper left",
-                frameon=False,
-                fontsize=8,
-            )
-        else:
-            ax.scatter(
-                coords[:, 0], coords[:, 1],
-                s=10, c="lightgray", alpha=0.5, zorder=1,
-            )
 
-        ax.set_title(plot_title, fontsize=13)
-        ax.set_xlabel(f"{basis.upper()}1")
-        ax.set_ylabel(f"{basis.upper()}2")
-
-    fig = ax.figure
+    scv.pl.scatter(
+        adata,
+        basis=basis,
+        color=color,
+        size=spot_size,
+        title="",
+        frameon=False,
+        legend_loc="on data",
+        figsize=figsize,
+        show=False,
+        ax=ax,
+        **scatter_kwargs,
+    )
+    ax.set_title(plot_title, fontsize=18, fontfamily="sans serif")
 
     # ------------------------------------------------------------------
     # Subsample for readability
@@ -1124,8 +1037,11 @@ def velocity_quiver(
     add_umap_axis(ax, basis=basis)
 
     plt.tight_layout()
-    _finish(fig, show=show, save=save, save_path=save_path)
-    return fig if not show else None
+    if owns_figure:
+        _finish(fig, show=show, save=save, save_path=save_path)
+        return fig if not show else None
+
+    return ax if not show else None
 
 def confidence(
     adata: AnnData,
@@ -2141,7 +2057,7 @@ def metric_summary(
         markeredgecolor="black", markersize=6,
     )
 
-    def _draw_panel(ax, data_dict, labels_str, panel_color, title, mean_val, xlabel):
+    def _draw_panel(ax, data_dict, labels_str, panel_color, title, mean_val, median_val, xlabel):
         data_list = list(data_dict.values())
         positions = list(range(len(labels_str)))
 
@@ -2166,37 +2082,30 @@ def metric_summary(
             ax.set_yticks(positions)
             ax.set_yticklabels(labels_str, fontsize=12)
             ax.set_xlim(-1.05, 1.05)
-            ax.set_xlabel(xlabel, fontsize=14)
+            ax.set_xlabel(xlabel, fontsize=16)
             ax.axvline(0, color="gray", linestyle="--", alpha=0.4, linewidth=0.8)
+            ax.text(
+                0.05, 0.95,
+                f"mean = {mean_val:.2f}\nmedian = {median_val:.2f}",
+                transform=ax.transAxes,
+                fontsize=14, fontweight="bold",
+                va="top", ha="left",
+            )
         else:
             ax.set_xticks(positions)
             ax.set_xticklabels(labels_str, fontsize=12, rotation=45, ha="right")
             ax.set_ylim(-1.05, 1.05)
-            ax.set_ylabel(xlabel, fontsize=14)
+            ax.set_ylabel(xlabel, fontsize=16)
             ax.axhline(0, color="gray", linestyle="--", alpha=0.4, linewidth=0.8)
+            ax.text(
+                0.05, 0.05,
+                f"mean = {mean_val:.2f}\nmedian = {median_val:.2f}",
+                transform=ax.transAxes,
+                fontsize=14, fontweight="bold",
+                va="bottom", ha="left",
+            )
 
         ax.set_title(title, fontsize=16) #, fontweight="bold")
-
-        # Mean as text in upper left corner
-        # ax.text(
-        #     0.05, 0.95,
-        #     f"mean = {mean_val:.3f}",
-        #     transform=ax.transAxes,
-        #     fontsize=10, fontweight="bold",
-        #     va="top", ha="left",
-        #     bbox=dict(
-        #         boxstyle="round,pad=0.3",
-        #         facecolor=panel_color, alpha=0.3,
-        #         edgecolor="black", linewidth=0.5,
-        #     ),
-        # )
-        ax.text(
-            0.05, 0.95,
-            f"mean = {mean_val:.2f}",
-            transform=ax.transAxes,
-            fontsize=14, fontweight="bold",
-            va="top", ha="left",
-        )
 
     # ------------------------------------------------------------------
     # Panel 1: ICCoh
@@ -2212,11 +2121,15 @@ def metric_summary(
         "iccoh_mean",
         np.mean([np.mean(v) for v in iccoh_ordered.values() if len(v) > 0]),
     )
+    iccoh_median = metrics.get(
+        "iccoh_median",
+        np.nan,
+    )
 
     _draw_panel(
         axes[0], iccoh_ordered, iccoh_labels_str,
         color_iccoh, "",
-        iccoh_mean, "ICCoh score",
+        iccoh_mean, iccoh_median, "ICCoh score",
     )
 
     # ------------------------------------------------------------------
@@ -2236,7 +2149,7 @@ def metric_summary(
         cbdir_labels_str = []
         for k in cbdir_labels:
             if isinstance(k, tuple):
-                cbdir_labels_str.append(f"{k[0]} → {k[1]}")
+                cbdir_labels_str.append(f"{k[0]} →\n {k[1]}")
             else:
                 cbdir_labels_str.append(str(k))
 
@@ -2244,11 +2157,15 @@ def metric_summary(
             "cbdir_mean",
             np.mean([np.mean(v) for v in cbdir_ordered.values() if len(v) > 0]),
         )
+        cbdir_median = metrics.get(
+            "cbdir_median",
+            np.nan,
+        )
 
         _draw_panel(
             axes[1], cbdir_ordered, cbdir_labels_str,
             color_cbdir, "",
-            cbdir_mean, "CBDir score",
+            cbdir_mean, cbdir_median, "CBDir score",
         )
 
     # fig.suptitle("VelOT Velocity Metrics", fontsize=24, fontfamily="sans serif")
