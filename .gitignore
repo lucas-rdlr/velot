@@ -3,6 +3,7 @@ datasets/
 *.h5ad
 
 agusti/
+supplementary/
 flux_matching/
 scvelo/
 scvelo2/

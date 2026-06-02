@@ -469,7 +469,7 @@ def smooth_velocity(
     lr: float = 1e-3,
     batch_size: int = 256,
     lambda_smooth: float = 0.5,
-    lambda_curl: float = 0.0,
+    lambda_curl: float = 0.5,
     lambda_divergence: float = 0.0,
     k_smooth: int = 15,
     use_pseudotime: bool = True,

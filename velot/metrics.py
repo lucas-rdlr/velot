@@ -271,7 +271,8 @@ def summary(
     cluster_edges: Optional[Sequence[Tuple[str, str]]] = None,
     cluster_key: str = "clusters",
     embedding_key: str = "X_umap",
-    velocity_key: str = "velot_velocity_umap"
+    velocity_key: str = "velot_velocity_umap",
+    print_results: bool = True
 ) -> dict:
     """
     Compute and print a summary of velocity metrics.
@@ -328,16 +329,17 @@ def summary(
     results["iccoh_mean"] = iccoh_global
     results["iccoh_median"] = iccoh_global_median
 
-    print("=" * 50)
-    print("VelOT Velocity Metrics")
-    print("=" * 50)
-    print(f"\nInner-Cluster Coherence (mean: {iccoh_global:.3f}):")
-    for cat in sorted(iccoh_means.keys()):
-        print(f"  {str(cat):>25s}: {iccoh_means[cat]:.3f}")
-    
-    print(f"\nInner-Cluster Coherence (median: {iccoh_global_median:.3f}):")
-    for cat in sorted(iccoh_median.keys()):
-        print(f"  {str(cat):>25s}: {iccoh_median[cat]:.3f}")
+    if print_results:
+        print("=" * 50)
+        print("VelOT Velocity Metrics")
+        print("=" * 50)
+        print(f"\nInner-Cluster Coherence (mean: {iccoh_global:.3f}):")
+        for cat in sorted(iccoh_means.keys()):
+            print(f"  {str(cat):>25s}: {iccoh_means[cat]:.3f}")
+        
+        print(f"\nInner-Cluster Coherence (median: {iccoh_global_median:.3f}):")
+        for cat in sorted(iccoh_median.keys()):
+            print(f"  {str(cat):>25s}: {iccoh_median[cat]:.3f}")
 
     # CBDir — get raw scores
     if cluster_edges is not None:
@@ -363,9 +365,11 @@ def summary(
         results["cbdir_mean"] = cbdir_global
         results["cbdir_median"] = cbdir_global_median
 
-        print(f"\nCross-Boundary Correctness (mean: {cbdir_global:.3f}):")
-        for (u, v) in cbdir_raw.keys():
-            print(f"  {u:>15s} → {v:<15s}: {cbdir_means[(u, v)]:.3f}")
+        if print_results:
+            print(f"\nCross-Boundary Correctness (mean: {cbdir_global:.3f}):")
+            for (u, v) in cbdir_raw.keys():
+                print(f"  {u:>15s} → {v:<15s}: {cbdir_means[(u, v)]:.3f}")
 
-    print("=" * 50)
+    if print_results:
+        print("=" * 50)
     return results

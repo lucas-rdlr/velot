@@ -10,7 +10,7 @@ repository-code: "https://github.com/lucas-rdlr/velot"
 url: "https://velot.readthedocs.io"
 license: MIT
 version: "0.1.0"
-date-released: "2025-01-01"  # Update with actual release date
+date-released: "2026-01-01"
 preferred-citation:
   type: article
   title: "VelOT: Velocity via Optimal Transport for kinetic-free RNA velocity estimation"
@@ -19,4 +19,4 @@ preferred-citation:
       given-names: "Lucas"
   journal: "bioRxiv"
   year: 2026
-  doi: "10.1101/2025.XX.XX.XXXXXX"  # Replace with actual DOI
+  doi: "10.1101/2025.XX.XX.XXXXXX"
