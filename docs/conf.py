@@ -24,6 +24,8 @@ extensions = [
     "sphinx.ext.mathjax",           # Render math in docs
     "sphinx_autodoc_typehints",     # Better type hint rendering
     "myst_parser",                  # Support Markdown files
+    "nbsphinx",
+    'sphinx_copybutton'
 ]
 
 # Enable math in MyST markdown
@@ -74,7 +76,7 @@ html_theme_options = {
     "navigation_depth": 4,
     "collapse_navigation": False,
     "sticky_navigation": True,
-    "titles_only": False,
+    "titles_only": True,
     "logo_only": False,
 }
 

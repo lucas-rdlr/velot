@@ -17,14 +17,20 @@ requiring spliced/unspliced count matrices.
    quickstart
 
 .. toctree::
+   :maxdepth: 1
+   :caption: Tutorials
+
+   tutorials/erythroid_tutorial
+   tutorials/pancreas_tutorial
+
+.. toctree::
    :maxdepth: 2
    :caption: User Guide
 
    methodology
-   tutorials
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 1
    :caption: API Reference
 
    api/pp
@@ -40,3 +46,16 @@ requiring spliced/unspliced count matrices.
 
    changelog
    citation
+
+If you use **VelOT** in your research, please cite:
+
+.. code-block:: bibtex
+
+   @article{velot2026,
+   title   = {VelOT: Velocity via Optimal Transport for kinetic-free
+               RNA velocity estimation},
+   author  = {Rincon de la Rosa, Lucas},
+   journal = {bioRxiv},
+   year    = {2026},
+   doi     = {10.1101/2025.XX.XX.XXXXXX}
+   }
