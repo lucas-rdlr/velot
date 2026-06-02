@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 os.chdir(Path(__file__).resolve().parent)
 
-figures_path = "/home/user/Documents/velot/article/figures/figure 3"
+figures_path = "figures/figure 3"
 show = False
 save = True
 basis = "pca"
@@ -55,7 +55,7 @@ edges = [
     ('Cluster 3', 'Cluster 4')
 ]
 results = velot.metrics.summary(adata, cluster_edges=edges, cluster_key=clusters_key, embedding_key=f"X_{basis}", velocity_key=f"velot_velocity_{basis}")
-velot.pl.metric_summary(results, orientation="horizontal", layout="row", figsize=(10,9), show=show, save=save, save_path=f"{figures_path}/figure3_h.png")
+velot.pl.metric_summary(results, orientation="vertical", layout="column", figsize=(7,7), show=show, save=save, save_path=f"{figures_path}/figure3_h.png")
 
 # Trajectories using the continuous field with evolving pseudotime
 velot.tl.compute_trajectories(

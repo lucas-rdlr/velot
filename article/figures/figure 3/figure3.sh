@@ -95,22 +95,22 @@ cat > "${OUTBASE}.tex" <<'EOF'
 
 % Row 2
 \begin{minipage}[t]{0.33\linewidth}
-\Panel{e}{Raw VelOT quiver}{figure3_e.png}{width=\linewidth}
+\Panel{d}{Raw VelOT quiver}{figure3_e.png}{width=\linewidth}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.33\linewidth}
-\Panel{f}{Smooth VelOT quiver}{figure3_f.png}{width=\linewidth}
+\Panel{e}{Smooth VelOT quiver}{figure3_f.png}{width=\linewidth}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.33\linewidth}
-\Panel{d}{VelOT velocity stream}{figure3_d.png}{width=\linewidth}
+\Panel{f}{VelOT velocity stream}{figure3_d.png}{width=\linewidth}
 \end{minipage}
 \vspace{5mm}
 
 
 % Row 3
-\begin{minipage}[t]{0.31\linewidth}
-\Panel{g}{VelOT training losses}{figure3_g.png}{width=\linewidth}
+\begin{minipage}[t]{0.33\linewidth}
+\Panel{g}{VelOT training losses}{figure3_g.png}{width=\linewidth, height=67mm}
 \end{minipage}\hfill
-\begin{minipage}[t]{0.32\linewidth}
+\begin{minipage}[t]{0.33\linewidth}
 \Panel{h}{VelOT velocity metrics}{figure3_h.png}{width=\linewidth}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.33\linewidth}

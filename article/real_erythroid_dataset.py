@@ -7,15 +7,19 @@ import os
 from pathlib import Path
 os.chdir(Path(__file__).resolve().parent)
 
-figures_path = "/home/user/Documents/velot/article/figures/figure 4"
+figures_path = "figures/figure 4"
 show = False
-save = True
+save = False
 basis = "pca"
 project_umap = True if basis == "pca" else False
 clusters_key = "celltype"
 
-# Load data
-adata = velot.datasets.erythroid()
+# Load datae
+try:
+    adata = sc.read_h5ad("data/Gastrulation/erythroid_lineage.h5ad")
+except:
+    print("No downloaded file found, retrieving from scvelo...")
+    adata = velot.datasets.erythroid()
 
 # Preprocess
 sc.pp.filter_cells(adata, min_counts=20)
@@ -61,7 +65,7 @@ edges = [
     ('Erythroid2', 'Erythroid3')
 ]
 results = velot.metrics.summary(adata, cluster_edges=edges, cluster_key=clusters_key, embedding_key=f"X_{basis}", velocity_key=f"velot_velocity_{basis}")
-velot.pl.metric_summary(results, orientation="horizontal", layout="row", figsize=(10,9), show=show, save=save, save_path=f"{figures_path}/figure4_h.png")
+velot.pl.metric_summary(results, orientation="vertical", layout="column", figsize=(7,7), show=show, save=save, save_path=f"{figures_path}/figure4_h.png")
 
 # Trajectories using the continuous field with evolving pseudotime
 velot.tl.compute_trajectories(

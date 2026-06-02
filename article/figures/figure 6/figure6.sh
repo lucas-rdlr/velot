@@ -17,7 +17,7 @@ set -euo pipefail
 #   ./make_figure.sh figureS11 --pdf
 # ============================================================================
 
-OUTBASE="panel5"
+OUTBASE="panel6"
 KEEP_PDF=false
 
 # ----------------------------------------------------------------------------
@@ -90,7 +90,7 @@ cat > "${OUTBASE}.tex" <<'EOF'
 \newcommand{\Panel}[4]{%
   \begin{minipage}[t]{\linewidth}
     \centering
-    \begin{tikzpicture}
+    \begin{tikzpicture}[baseline=(img.north)]
 
       \node[anchor=north west, inner sep=0] (img)
       {\img[#4]{#3}};
@@ -127,8 +127,14 @@ cat > "${OUTBASE}.tex" <<'EOF'
 % Row 1
 % --------------------------------------------------------------------------
 
-\begin{minipage}[t]{0.99\linewidth}
-\Panel{a}{Real datasets}{figure5_a.png}{width=\linewidth}
+\begin{minipage}[t]{0.33\linewidth}
+\Panel{a}{VAMPFlow neural meta-states}{figure6_a.png}{width=\linewidth}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.33\linewidth}
+\Panel{b}{VAMPFlow neural meta-states direction}{figure6_b.png}{width=\linewidth}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.33\linewidth}
+\Panel{c}{Coarse meta-states transition}{figure6_c.png}{width=\linewidth}
 \end{minipage}
 
 \vspace{5mm}
@@ -137,8 +143,14 @@ cat > "${OUTBASE}.tex" <<'EOF'
 % Row 2
 % --------------------------------------------------------------------------
 
-\begin{minipage}[t]{0.99\linewidth}
-\Panel{b}{Synthetic datasets}{figure5_b.png}{width=\linewidth}
+\begin{minipage}[t]{0.33\linewidth}
+\Panel{d}{Cell-type composition per meta-state}{figure6_d.png}{width=\linewidth}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.33\linewidth}
+\Panel{e}{Fisher enrichment of cell-types}{figure6_e.png}{width=\linewidth}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.33\linewidth}
+\Panel{f}{Directionality diagnosis}{figure6_f.png}{width=\linewidth}
 \end{minipage}
 
 \end{minipage}

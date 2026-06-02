@@ -107,10 +107,10 @@ cat > "${OUTBASE}.tex" <<'EOF'
 
 
 % Row 3
-\begin{minipage}[t]{0.31\linewidth}
-\Panel{g}{VelOT training losses}{figure4_g.png}{width=\linewidth}
+\begin{minipage}[t]{0.33\linewidth}
+\Panel{g}{VelOT training losses}{figure4_g.png}{width=\linewidth, height=67mm}
 \end{minipage}\hfill
-\begin{minipage}[t]{0.32\linewidth}
+\begin{minipage}[t]{0.33\linewidth}
 \Panel{h}{VelOT velocity metrics}{figure4_h.png}{width=\linewidth}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.33\linewidth}

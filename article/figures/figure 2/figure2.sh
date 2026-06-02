@@ -4,7 +4,7 @@ set -euo pipefail
 # Spatial Hubs Figure Generator - LaTeX/Bash Version
 # Letters overlaid on images WITHOUT boxes
 
-OUTBASE="${1:-panel_part2}"
+OUTBASE="${1:-panel2}"
 
 # Find required tools
 TECTONIC="$(command -v tectonic || true)"
@@ -82,41 +82,41 @@ cat > "${OUTBASE}.tex" <<'EOF'
 
 % Row 1
 \begin{minipage}[t]{0.22\linewidth}
-\Panel{a}{Cell clusters}{/home/user/Documents/velot/figures/figure 2/figure2_a.png}{width=\linewidth}
+\Panel{a}{Cell clusters}{figure2_a.png}{width=\linewidth}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.22\linewidth}
-\Panel{b}{Diffusion pseudotime}{/home/user/Documents/velot/figures/figure 2/figure2_b.png}{width=\linewidth}
+\Panel{b}{Diffusion pseudotime}{figure2_b.png}{width=\linewidth}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.22\linewidth}
-\Panel{c}{VelOT confidence}{/home/user/Documents/velot/figures/figure 2/figure2_c.png}{width=\linewidth}
+\Panel{c}{VelOT confidence}{figure2_c.png}{width=\linewidth}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.22\linewidth}
-\Panel{d}{VelOT velocity stream}{/home/user/Documents/velot/figures/figure 2/figure2_d.png}{width=\linewidth}
+\Panel{d}{VelOT velocity stream}{figure2_d.png}{width=\linewidth}
 \end{minipage}
 \vspace{5mm}
 % Row 2
 \begin{minipage}[t]{0.22\linewidth}
-\Panel{e}{Alpha}{/home/user/Documents/velot/figures/figure 2/figure2_h.png}{width=\linewidth}
+\Panel{e}{Alpha}{figure2_i_alpha.png}{width=\linewidth}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.22\linewidth}
-\Panel{f}{Beta}{/home/user/Documents/velot/figures/figure 2/figure2_i.png}{width=\linewidth}
+\Panel{f}{Beta}{figure2_i_beta.png}{width=\linewidth}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.22\linewidth}
-\Panel{g}{Delta}{/home/user/Documents/velot/figures/figure 2/figure2_j.png}{width=\linewidth}
+\Panel{g}{Delta}{figure2_i_delta.png}{width=\linewidth}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.22\linewidth}
-\Panel{h}{Epsilon}{/home/user/Documents/velot/figures/figure 2/figure2_j.png}{width=\linewidth}
+\Panel{h}{Epsilon}{figure2_i_epsilon.png}{width=\linewidth}
 \end{minipage}
 \vspace{5mm}
 % Row 3
-\begin{minipage}[t]{0.44\linewidth}
-\Panel{i}{Pair of OT windows}{/home/user/Documents/velot/figures/figure 2/figure2_e.png}{width=\linewidth}
+\begin{minipage}[t]{0.31\linewidth}
+\Panel{i}{Pair of OT windows}{figure2_j.png}{width=\linewidth, height=61mm}
 \end{minipage}\hfill
-\begin{minipage}[t]{0.22\linewidth}
-\Panel{j}{VelOT training losses}{/home/user/Documents/velot/figures/figure 2/figure2_f.png}{width=\linewidth}
-\end{minipage}
-\begin{minipage}[t]{0.24\linewidth}
-\Panel{k}{VelOT velocity metrics}{/home/user/Documents/velot/figures/figure 2/figure2_g.png}{width=\linewidth}
+\begin{minipage}[t]{0.31\linewidth}
+\Panel{j}{VelOT training losses}{figure2_g.png}{width=\linewidth, height=61mm}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.31\linewidth}
+\Panel{k}{VelOT velocity metrics}{figure2_h.png}{width=\linewidth}
 \end{minipage}
 
 \end{minipage}
