@@ -6,8 +6,8 @@ If you use VelOT in your research, please cite:
 .. code-block:: bibtex
 
    @article{velot2026,
-     title   = {VelOT: Velocity via Optimal Transport for kinetic-free
-                RNA velocity estimation},
+     title   = {VelOT: kinetic-free RNA velocity inference via optimal transport,
+               flow-field smoothing, and VAMP coarse-graining of cellular dynamics},
      author  = {Rincon de la Rosa, Lucas},
      journal = {bioRxiv},
      year    = {2026},
