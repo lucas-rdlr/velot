@@ -17,7 +17,7 @@ set -euo pipefail
 #   ./make_figure.sh figureS11 --pdf
 # ============================================================================
 
-OUTBASE="panel6"
+OUTBASE="panel1"
 KEEP_PDF=false
 
 # ----------------------------------------------------------------------------
@@ -127,14 +127,14 @@ cat > "${OUTBASE}.tex" <<'EOF'
 % Row 1
 % --------------------------------------------------------------------------
 
-\begin{minipage}[t]{0.33\linewidth}
-\Panel{a}{VAMPFlow neural meta-states}{figure6_a.png}{width=\linewidth}
+\begin{minipage}[t]{0.24\linewidth}
+\Panel{a}{Preprocessing}{figure1_a.png}{width=\linewidth}
 \end{minipage}\hfill
-\begin{minipage}[t]{0.33\linewidth}
-\Panel{b}{VAMPFlow neural meta-states direction}{figure6_b.png}{width=\linewidth}
+\begin{minipage}[t]{0.37\linewidth}
+\Panel{b}{Graph and DPT computation}{figure1_b.png}{width=\linewidth}
 \end{minipage}\hfill
-\begin{minipage}[t]{0.33\linewidth}
-\Panel{c}{Coarse meta-states transition}{figure6_c.png}{width=\linewidth}
+\begin{minipage}[t]{0.38\linewidth}
+\Panel{c}{Create pairs of windows for OT}{figure1_c.png}{width=\linewidth}
 \end{minipage}
 
 \vspace{5mm}
@@ -143,16 +143,15 @@ cat > "${OUTBASE}.tex" <<'EOF'
 % Row 2
 % --------------------------------------------------------------------------
 
-\begin{minipage}[t]{0.33\linewidth}
-\Panel{d}{Cell-type composition per meta-state}{figure6_d.png}{width=\linewidth}
+\hfill\begin{minipage}[t]{0.45\linewidth}
+\Panel{d}{OT sinkhorn defines raw velocities}{figure1_d.png}{width=\linewidth}
 \end{minipage}\hfill
-\begin{minipage}[t]{0.33\linewidth}
-\Panel{e}{Fisher enrichment of cell-types}{figure6_e.png}{width=\linewidth}
+\begin{minipage}[t]{0.27\linewidth}
+\Panel{e}{Smooth field via MLP}{figure1_e.png}{width=\linewidth}
 \end{minipage}\hfill
-\begin{minipage}[t]{0.33\linewidth}
-\Panel{f}{Directionality diagnosis}{figure6_f.png}{width=\linewidth}
+\begin{minipage}[t]{0.27\linewidth}
+\Panel{f}{Final VelOT projected to UMAP}{figure1_f.png}{width=\linewidth}
 \end{minipage}
-
 \end{minipage}
 
 \end{document}
