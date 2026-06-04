@@ -136,7 +136,7 @@ If you use **VelOT** in your research, please cite:
    author  = {Rincon de la Rosa, Lucas},
    journal = {bioRxiv},
    year    = {2026},
-   doi     = {10.1101/2025.XX.XX.XXXXXX}
+   doi     = {10.1101/2026.XX.XX.XXXXXX}
    }
 
 Indices and tables
