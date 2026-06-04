@@ -19,6 +19,12 @@
   <a href="https://velot.readthedocs.io">
     <img alt="Documentation" src="https://readthedocs.org/projects/velot/badge/?version=latest">
   </a>
+  <a href="https://doi.org/10.5281/zenodo.20542878">
+    <img alt="DOI" src="https://zenodo.org/badge/DOI/10.5281/zenodo.20542878.svg">
+  </a>
+  <a href="https://doi.org/10.5281/zenodo.20530116">
+    <img alt="Data DOI" src="https://img.shields.io/badge/Zenodo-data-blue.svg">
+  </a>
 </p>
 
 **VelOT** is a kinetic-free framework for estimating RNA velocity from
