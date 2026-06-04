@@ -11,6 +11,11 @@ LatentVelo/
 
 extra/
 
+/export_project.py
+/velot_project_export.txt
+/readthedocs_export.txt
+/project_tree.txt
+
 *.egg-info/
 build/
 dist/
