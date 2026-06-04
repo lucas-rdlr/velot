@@ -9,6 +9,8 @@ scvelo/
 scvelo2/
 LatentVelo/
 
+extra/
+
 *.egg-info/
 build/
 dist/
