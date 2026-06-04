@@ -64,7 +64,7 @@ Tools (``velot.tl``)
 Changelog
 =========
 
-v0.1.0 (2026)
+v1.0.0 (2026)
 --------------
 
 Initial release.
@@ -109,7 +109,7 @@ sys.path.insert(0, os.path.abspath(".."))
 project = "VelOT"
 copyright = "2026, Lucas Rincon de la Rosa"
 author = "Lucas Rincon de la Rosa"
-release = "0.1.0"
+release = "1.0.0"
 
 # -- General configuration ---------------------------------------------------
 
@@ -491,7 +491,7 @@ Verify Installation
 
    import velot
    print(velot.__version__)
-   # 0.1.0
+   # 1.0.0
 
 Dependencies
 ------------

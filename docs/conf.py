@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.abspath(".."))
 project = "VelOT"
 copyright = "2026, Lucas Rincon de la Rosa"
 author = "Lucas Rincon de la Rosa"
-release = "0.1.0"
+release = "1.0.0"
 
 # -- General configuration ---------------------------------------------------
 

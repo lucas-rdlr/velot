@@ -272,7 +272,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "velot"
-version = "0.1.0"
+version = "1.0.0"
 description = "Optimal Transport RNA Velocity with Flow Matching Smoothing"
 readme = "README.md"
 license = {text = "MIT"}
@@ -316,7 +316,7 @@ API follows the scanpy/scvelo convention::
 
 from . import pp, tl, pl, metrics, datasets
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"
 
 __all__ = ["pp", "tl", "pl", "metrics", "datasets"]
 

@@ -16,6 +16,6 @@ API follows the scanpy/scvelo convention::
 
 from . import pp, tl, pl, metrics, datasets
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"
 
 __all__ = ["pp", "tl", "pl", "metrics", "datasets"]
