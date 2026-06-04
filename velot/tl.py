@@ -1,7 +1,4 @@
 """
-velot.tl — Tools
-================
-
 Core analysis functions for the VelOT pipeline.
 
 Follows the scanpy/scvelo convention: functions modify adata in place

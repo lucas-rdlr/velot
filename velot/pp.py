@@ -1,7 +1,4 @@
 """
-velot.pp — Preprocessing
-========================
-
 Prepares an AnnData object for the VelOT pipeline.
 Follows the scanpy convention: functions modify adata in place
 and return it for optional chaining.

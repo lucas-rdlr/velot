@@ -1,3 +1,512 @@
+=== file: _static/.gitkeep ===
+
+
+=== file: _static/panel1.png ===
+[Binary or unreadable file]
+
+
+=== file: api/benchmark.rst ===
+Benchmarking (``velot.benchmark``)
+================================
+
+.. automodule:: velot.benchmark
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+=== file: api/datasets.rst ===
+Datasets (``velot.datasets``)
+===========================
+
+.. automodule:: velot.datasets
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+=== file: api/metrics.rst ===
+Metrics (``velot.metrics``)
+===========================
+
+.. automodule:: velot.metrics
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+=== file: api/pl.rst ===
+Plotting (``velot.pl``)
+====================
+
+.. automodule:: velot.pl
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+=== file: api/pp.rst ===
+Preprocessing (``velot.pp``)
+=============================
+
+.. automodule:: velot.pp
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+=== file: api/tl.rst ===
+Tools (``velot.tl``)
+==================
+
+.. automodule:: velot.tl
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :exclude-members: _VelocityNet, _TimerContext
+
+=== file: changelog.rst ===
+Changelog
+=========
+
+v0.1.0 (2026)
+--------------
+
+Initial release.
+
+- Optimal transport velocity estimation
+- Neural velocity field smoothing
+- Spatial-temporal windowing
+- Velocity projection to UMAP/t-SNE
+- Trajectory computation and visualization
+- Built-in evaluation metrics (ICCoh, CBDir)
+- Benchmarking framework
+- Synthetic dataset generators
+
+=== file: citation.rst ===
+Citation
+========
+
+If you use VelOT in your research, please cite:
+
+.. code-block:: bibtex
+
+   @article{velot2025,
+     title   = {VelOT: Velocity via Optimal Transport for kinetic-free
+                RNA velocity estimation},
+     author  = {de la Roche, Lucas},
+     journal = {bioRxiv},
+     year    = {2025},
+     doi     = {10.1101/2025.XX.XX.XXXXXX}
+   }
+
+=== file: conf.py ===
+# Configuration file for the Sphinx documentation builder.
+
+import os
+import sys
+
+# Add the project root to sys.path so Sphinx can find the velot package
+sys.path.insert(0, os.path.abspath(".."))
+
+# -- Project information -----------------------------------------------------
+
+project = "VelOT"
+copyright = "2026, Lucas Rincon de la Rosa"
+author = "Lucas Rincon de la Rosa"
+release = "0.1.0"
+
+# -- General configuration ---------------------------------------------------
+
+extensions = [
+    "sphinx.ext.autodoc",           # Pull docstrings from code
+    "sphinx.ext.autosummary",       # Generate summary tables
+    "sphinx.ext.napoleon",          # Support NumPy/Google docstrings
+    "sphinx.ext.viewcode",          # Add [source] links
+    "sphinx.ext.intersphinx",       # Link to other projects' docs
+    "sphinx.ext.mathjax",           # Render math in docs
+    "sphinx_autodoc_typehints",     # Better type hint rendering
+    "myst_parser",                  # Support Markdown files
+    "nbsphinx",
+    'sphinx_copybutton'
+]
+
+# -- nbsphinx configuration ---------------------------------------------------
+nbsphinx_execute = "never"  # Notebooks are pre-executed; don't re-run on build
+
+# Prolog: added to the top of every notebook rendered in docs
+nbsphinx_prolog = r"""
+{% set docname = env.doc2path(env.docname, base=None) %}
+
+.. raw:: html
+
+    <div style="margin-bottom: 20px; padding: 10px; background-color: #f0f0f0;
+                border-radius: 5px; border-left: 4px solid #2980b9;">
+        <strong>📓 Interactive notebook</strong><br>
+        <a href="https://github.com/lucas-rdlr/velot/tree/main/docs/{{ docname }}"
+           target="_blank" style="margin-right: 15px;">
+            🔗 View on GitHub
+        </a>
+        <a href="{{ docname.split('/')[-1] }}.ipynb"
+           download style="margin-right: 15px;">
+            ⬇️ Download notebook
+        </a>
+    </div>
+"""
+
+# Enable math in MyST markdown
+myst_enable_extensions = [
+    "dollarmath",      # allows $inline$ and $$block$$ math
+    "amsmath",         # allows \begin{equation} etc.
+]
+
+# Napoleon settings (for NumPy-style docstrings)
+napoleon_google_docstring = False
+napoleon_numpy_docstring = True
+napoleon_include_init_with_doc = False
+napoleon_use_param = True
+napoleon_use_rtype = True
+
+# Autodoc settings
+autodoc_member_order = "bysource"
+autodoc_typehints = "description"
+autosummary_generate = True
+
+# Intersphinx: link to external docs
+intersphinx_mapping = {
+    "python": ("https://docs.python.org/3", None),
+    "numpy": ("https://numpy.org/doc/stable/", None),
+    "scipy": ("https://docs.scipy.org/doc/scipy/", None),
+    "pandas": ("https://pandas.pydata.org/docs/", None),
+    "anndata": ("https://anndata.readthedocs.io/en/stable/", None),
+    "scanpy": ("https://scanpy.readthedocs.io/en/stable/", None),
+}
+
+# Source file suffixes
+source_suffix = {
+    ".rst": "restructuredtext",
+    ".md": "markdown",
+}
+
+# The master toctree document
+master_doc = "index"
+
+# Exclude patterns
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+
+# -- Options for HTML output -------------------------------------------------
+
+html_theme = "sphinx_rtd_theme"
+
+html_theme_options = {
+    "navigation_depth": 4,
+    "collapse_navigation": False,
+    "sticky_navigation": True,
+    "titles_only": True,
+    "logo_only": False,
+    "prev_next_buttons_location": "bottom",
+    "style_nav_header_background": "#2980b9",
+}
+
+html_title = "VelOT Documentation"
+html_short_title = "VelOT"
+
+# If you have a logo, uncomment:
+# html_logo = "_static/logo.png"
+
+html_static_path = ["_static"]
+
+# Suppress warnings for missing references to torch types
+nitpick_ignore = [
+    ("py:class", "torch.Tensor"),
+    ("py:class", "torch.nn.Module"),
+    ("py:class", "torch.device"),
+]
+
+# Mock imports for packages that may not be installed in the docs environment
+autodoc_mock_imports = [
+    "torch",
+    "scvelo",
+    "ot",
+    "ipywidgets",
+]
+
+=== file: contributing.rst ===
+Contributing
+============
+
+We welcome contributions to VelOT! This page describes how to set up a
+development environment and submit changes.
+
+Development Installation
+------------------------
+
+.. code-block:: bash
+
+   git clone https://github.com/lucas-rdlr/velot.git
+   cd velot
+   conda create -n velot-dev python=3.10 -y
+   conda activate velot-dev
+
+   # Install PyTorch (adjust for your CUDA version)
+   pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+
+   # Install VelOT in editable mode with dev dependencies
+   pip install -e ".[dev,docs]"
+
+Running Tests
+-------------
+
+.. code-block:: bash
+
+   pytest tests/ -v
+
+Code Style
+----------
+
+We follow standard Python conventions:
+
+- Type hints for all public functions
+- NumPy-style docstrings
+- Line length ≤ 88 characters (Black formatter)
+
+.. code-block:: bash
+
+   black velot/
+   flake8 velot/
+
+Building Documentation Locally
+-------------------------------
+
+.. code-block:: bash
+
+   cd docs
+   make html
+   # Open _build/html/index.html in your browser
+
+Reporting Issues
+----------------
+
+Please report bugs and feature requests on the
+`GitHub issue tracker <https://github.com/lucas-rdlr/velot/issues>`_.
+
+Submitting Changes
+------------------
+
+1. Fork the repository
+2. Create a feature branch (``git checkout -b feature/my-feature``)
+3. Commit your changes with clear messages
+4. Push to your fork and open a Pull Request
+5. Describe what your PR does and link any relevant issues
+
+.. note::
+
+   For major changes, please open an issue first to discuss the
+   proposed modification.
+
+=== file: index.rst ===
+VelOT Documentation
+====================
+
+.. raw:: html
+
+   <p align="center">
+   <img src="https://img.shields.io/badge/Python-3.10%E2%80%933.11-informational.svg" />
+   <img src="https://img.shields.io/badge/AnnData-.h5ad%20native-blueviolet.svg" />
+   <img src="https://img.shields.io/badge/Scanpy-compatible-brightgreen.svg" />
+   </p>
+
+   <p align="center">
+   <a href="LICENSE">
+      <img alt="License" src="https://img.shields.io/badge/License-MIT-green.svg">
+   </a>
+   <a href="https://pypi.org/project/h5adify/">
+      <img alt="PyPI" src="https://img.shields.io/pypi/v/h5adify.svg">
+   </a>
+   <a href="https://test.pypi.org/project/h5adify/">
+      <img alt="TestPyPI" src="https://img.shields.io/badge/TestPyPI-available-orange.svg">
+   </a>
+   <a href="https://velot.readthedocs.io">
+      <img alt="Documentation" src="https://readthedocs.org/projects/velot/badge/?version=latest">
+   </a>
+   </p>
+
+**VelOT** (Velocity via Optimal Transport) is a kinetic-free framework
+for estimating RNA velocity from single-cell transcriptomic data.
+
+.. image:: _static/panel1.png
+   :alt: VelOT pipeline overview
+   :align: center
+   :width: 90%
+
+|
+
+Why VelOT?
+----------
+
+Existing RNA velocity methods (velocyto, scVelo) rely on modeling the
+molecular kinetics of splicing and degradation, requiring
+spliced/unspliced count matrices and assumptions about transcriptional
+steady states that frequently fail in complex biological systems.
+
+**VelOT takes a fundamentally different approach.** It treats velocity
+inference as an optimal transport problem in gene expression space:
+
+- **Kinetic-free**: no spliced/unspliced counts needed — works with
+  any gene expression matrix.
+- **Principled directionality**: pseudotime-informed cost matrices
+  enforce biologically consistent forward transport.
+- **Continuous velocity fields**: a neural network smoothing step
+  produces a velocity function that can be evaluated at any point in
+  expression space, not just at observed cell positions.
+- **Robust evaluation**: built-in metrics (ICCoh, CBDir) and a
+  benchmarking framework for systematic velocity quality assessment.
+
+Key Features
+------------
+
+.. list-table::
+   :widths: 30 70
+   :header-rows: 0
+
+   * - 🔬 **Preprocessing**
+     - Automated pipeline with pseudotime via Diffusion Pseudotime
+   * - 🪟 **Spatial-temporal windowing**
+     - Two-level strategy ensuring local, biologically meaningful OT
+   * - 🚚 **Optimal transport velocity**
+     - Structured cost matrices with pseudotime and KNN penalties
+   * - 🧠 **Neural smoothing**
+     - MLP-based continuous velocity field with confidence weighting
+   * - 📊 **Visualization**
+     - Stream plots, trajectory analysis, metric dashboards
+   * - 📏 **Evaluation**
+     - ICCoh, CBDir metrics with built-in benchmarking
+
+Quick Example
+-------------
+
+.. code-block:: python
+
+   import velot
+
+   adata = velot.datasets.pancreas()
+   adata = velot.pp.prepare(adata, root_cluster="Ductal", cluster_key="clusters")
+   velot.tl.velocity(adata)
+   velot.pl.velocity_stream(adata, color="clusters")
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Getting Started
+
+   installation
+   quickstart
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Tutorials
+
+   tutorials/erythroid_tutorial
+   tutorials/pancreas_tutorial
+
+.. toctree::
+   :maxdepth: 2
+   :caption: User Guide
+
+   methodology
+
+.. toctree::
+   :maxdepth: 1
+   :caption: API Reference
+
+   api/pp
+   api/tl
+   api/pl
+   api/metrics
+   api/datasets
+   api/benchmark
+
+.. toctree::
+   :maxdepth: 1
+   :caption: About
+
+   changelog
+   citation
+   contributing
+
+If you use **VelOT** in your research, please cite:
+
+.. code-block:: bibtex
+
+   @article{velot2026,
+   title   = {VelOT: Velocity via Optimal Transport for kinetic-free
+               RNA velocity estimation},
+   author  = {Rincon de la Rosa, Lucas},
+   journal = {bioRxiv},
+   year    = {2026},
+   doi     = {10.1101/2025.XX.XX.XXXXXX}
+   }
+
+Indices and tables
+==================
+* :ref:`genindex`
+* :ref:`search`
+
+=== file: installation.rst ===
+Installation
+============
+
+Requirements
+------------
+
+- Python ≥ 3.9
+- PyTorch ≥ 1.9 (installed separately for CUDA compatibility)
+
+Install from GitHub
+-------------------
+
+We recommend a fresh conda environment:
+
+.. code-block:: bash
+
+   # Create environment
+   conda create -n velot python=3.10 -y
+   conda activate velot
+
+   # Install PyTorch first (adjust for your CUDA version)
+   # GPU:
+   pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+   # CPU only:
+   # pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+   # Install VelOT
+   git clone https://github.com/lucas-rdlr/velot.git
+   cd velot
+   pip install -e .
+
+.. note::
+
+   PyTorch is installed separately to allow users to choose the
+   appropriate CUDA version for their system. See
+   `pytorch.org <https://pytorch.org>`_ for installation options.
+
+Verify Installation
+-------------------
+
+.. code-block:: python
+
+   import velot
+   print(velot.__version__)
+   # 0.1.0
+
+Dependencies
+------------
+
+VelOT automatically installs the following packages:
+
+- ``numpy``, ``scipy``, ``pandas``
+- ``anndata``, ``scanpy``
+- ``scikit-learn``
+- ``matplotlib``
+- ``POT`` (Python Optimal Transport)
+- ``scvelo``
+- ``tqdm``
+
+=== file: methodology.md ===
 # VelOT: Complete Methodology
 
 ## Overview
@@ -259,3 +768,95 @@ This local linear approximation respects the nonlinear geometry of the UMAP embe
 | $\mathbf{v}_i^{\text{UMAP}} \in \mathbb{R}^2$ | UMAP-projected velocity for visualization |
 
 ---
+
+=== file: quickstart.rst ===
+Quick Start
+===========
+
+Minimal Example
+---------------
+
+.. code-block:: python
+
+   import velot
+
+   # Load a dataset
+   adata = velot.datasets.pancreas()
+
+   # Preprocess
+   adata = velot.pp.prepare(
+       adata, root_cluster="Ductal", cluster_key="clusters"
+   )
+
+   # Compute velocity
+   velot.tl.velocity(adata)
+
+   # Visualize
+   velot.pl.velocity_stream(adata, color="clusters")
+
+Step-by-Step Example
+--------------------
+
+For more control over individual pipeline stages:
+
+.. code-block:: python
+
+   import velot
+
+   adata = velot.datasets.pancreas()
+
+   # Step 1: Preprocessing
+   adata = velot.pp.prepare(
+       adata, root_cluster="Ductal", cluster_key="clusters"
+   )
+
+   # Step 2: Build spatial-temporal windows
+   velot.tl.build_windows(adata, n_clusters=10, window_size=50)
+
+   # Step 3: Compute OT velocity
+   velot.tl.compute_ot_velocity(
+       adata, reg=0.05, lambda_time=1.0, lambda_knn=1.0
+   )
+
+   # Step 4: Smooth with neural network
+   velot.tl.smooth_velocity(
+       adata, n_epochs=200, lambda_smooth=0.5
+   )
+
+   # Step 5: Project to UMAP for visualization
+   velot.tl.project_to_umap(adata)
+
+   # Visualize
+   velot.pl.velocity_stream(adata, color="clusters")
+
+Evaluating Velocity Quality
+----------------------------
+
+.. code-block:: python
+
+   edges = [
+       ("Ngn3 low EP", "Ngn3 high EP"),
+       ("Ngn3 high EP", "Fev+"),
+       ("Fev+", "Alpha"),
+       ("Fev+", "Beta"),
+   ]
+
+   results = velot.metrics.summary(
+       adata, cluster_edges=edges, cluster_key="clusters"
+   )
+
+   velot.pl.metric_summary(results)
+
+Trajectory Analysis
+--------------------
+
+.. code-block:: python
+
+   velot.tl.compute_trajectories(
+       adata,
+       start_cluster="Ngn3 low EP",
+       direction="forward",
+       n_trajectories=20,
+   )
+
+   velot.pl.trajectories(adata, color="clusters")

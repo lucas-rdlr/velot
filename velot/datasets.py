@@ -1,7 +1,4 @@
 """
-velot.datasets — Built-in Datasets
-===================================
-
 Real datasets (require scVelo)::
 
     adata = velot.datasets.pancreas()

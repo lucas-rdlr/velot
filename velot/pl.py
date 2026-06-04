@@ -1,7 +1,4 @@
 """
-velot.pl — Plotting
-===================
-
 Visualization functions for the VelOT pipeline.
 Follows the scanpy/scvelo convention.
 

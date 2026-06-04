@@ -1,4 +1,4 @@
-velot.tl — Tools
+Tools (``velot.tl``)
 ==================
 
 .. automodule:: velot.tl

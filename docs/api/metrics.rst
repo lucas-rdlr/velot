@@ -1,4 +1,4 @@
-velot.metrics — Evaluation
+Metrics (``velot.metrics``)
 ===========================
 
 .. automodule:: velot.metrics

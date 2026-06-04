@@ -1,4 +1,4 @@
-velot.pl — Plotting
+Plotting (``velot.pl``)
 ====================
 
 .. automodule:: velot.pl

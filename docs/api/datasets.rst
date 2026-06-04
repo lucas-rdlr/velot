@@ -1,4 +1,4 @@
-velot.datasets — Datasets
+Datasets (``velot.datasets``)
 ===========================
 
 .. automodule:: velot.datasets

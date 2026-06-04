@@ -4,7 +4,8 @@ from pathlib import Path
 
 DEFAULT_IGNORE = {
     '.git', '.gitignore', '__pycache__', '.venv', 'venv', '.env',
-    'notebooks', 'article', 'export_project.py', 'velot.egg-info'
+    'notebooks', 'article', 'export_project.py', 'velot.egg-info',
+    '_build'
 }
 
 DEFAULT_IGNORE_EXTENSIONS = {

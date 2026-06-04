@@ -1,5 +1,5 @@
-velot.pp — Preprocessing
-=========================
+Preprocessing (``velot.pp``)
+=============================
 
 .. automodule:: velot.pp
    :members:

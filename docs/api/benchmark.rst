@@ -1,4 +1,4 @@
-velot.benchmark — Benchmarking
+Benchmarking (``velot.benchmark``)
 ================================
 
 .. automodule:: velot.benchmark

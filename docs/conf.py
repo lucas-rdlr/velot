@@ -28,6 +28,29 @@ extensions = [
     'sphinx_copybutton'
 ]
 
+# -- nbsphinx configuration ---------------------------------------------------
+nbsphinx_execute = "never"  # Notebooks are pre-executed; don't re-run on build
+
+# Prolog: added to the top of every notebook rendered in docs
+nbsphinx_prolog = r"""
+{% set docname = env.doc2path(env.docname, base=None) %}
+
+.. raw:: html
+
+    <div style="margin-bottom: 20px; padding: 10px; background-color: #f0f0f0;
+                border-radius: 5px; border-left: 4px solid #2980b9;">
+        <strong>📓 Interactive notebook</strong><br>
+        <a href="https://github.com/lucas-rdlr/velot/tree/main/docs/{{ docname }}"
+           target="_blank" style="margin-right: 15px;">
+            🔗 View on GitHub
+        </a>
+        <a href="{{ docname.split('/')[-1] }}.ipynb"
+           download style="margin-right: 15px;">
+            ⬇️ Download notebook
+        </a>
+    </div>
+"""
+
 # Enable math in MyST markdown
 myst_enable_extensions = [
     "dollarmath",      # allows $inline$ and $$block$$ math
@@ -78,6 +101,8 @@ html_theme_options = {
     "sticky_navigation": True,
     "titles_only": True,
     "logo_only": False,
+    "prev_next_buttons_location": "bottom",
+    "style_nav_header_background": "#2980b9",
 }
 
 html_title = "VelOT Documentation"

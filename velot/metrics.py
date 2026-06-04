@@ -1,7 +1,4 @@
 """
-velot.metrics — Evaluation
-==========================
-
 Metrics for evaluating velocity field quality.
 
 Adapted from UniTVelo (Gao et al. 2022) and the original VelOT pipeline.
