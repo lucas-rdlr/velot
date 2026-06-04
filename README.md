@@ -10,12 +10,6 @@
   <a href="LICENSE">
     <img alt="License" src="https://img.shields.io/badge/License-MIT-green.svg">
   </a>
-  <a href="https://pypi.org/project/h5adify/">
-    <img alt="PyPI" src="https://img.shields.io/pypi/v/h5adify.svg">
-  </a>
-  <a href="https://test.pypi.org/project/h5adify/">
-    <img alt="TestPyPI" src="https://img.shields.io/badge/TestPyPI-available-orange.svg">
-  </a>
   <a href="https://velot.readthedocs.io">
     <img alt="Documentation" src="https://readthedocs.org/projects/velot/badge/?version=latest">
   </a>
