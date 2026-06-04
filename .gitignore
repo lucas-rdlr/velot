@@ -2,19 +2,28 @@ data/
 datasets/
 *.h5ad
 
-agusti/
-supplementary/
-flux_matching/
+/article/real_bonemarrow_dataset.py
+/article/real_dendate_dataset.py
+/article/real_hindbrain_dataset.py
+/article/synthetic_bifurcation_dataset.py
+
+/article/benchmark/benchmark_results/
+
+/article/figures/supplementary/
+/article/figures/figure 1/extra/
+
+
 scvelo/
 scvelo2/
-LatentVelo/
-
-extra/
 
 /export_project.py
 /velot_project_export.txt
 /readthedocs_export.txt
 /project_tree.txt
+
+notebooks/agusti/
+notebooks/extra/
+notebooks/supplementary/*/
 
 *.egg-info/
 build/
