@@ -28,7 +28,7 @@ an optimal transport problem in gene expression space, producing smooth,
 continuous velocity fields without requiring spliced/unspliced count
 matrices.
 
-> **Paper:** *VelOT: Velocity via Optimal Transport for kinetic-free RNA velocity estimation*
+> **Paper:** *VelOT: kinetic-free RNA velocity inference via optimal transport, flow-field smoothing, and VAMP coarse-graining of cellular dynamics*
 > — [Preprint (coming soon)](#citation)
 
 <p align="center">
