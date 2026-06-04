@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "velot"
-version = "0.1.0"
+version = "1.0.0"
 description = "RNA Velocity via Optimal Transport"
 readme = "README.md"
 license = {text = "MIT"}
