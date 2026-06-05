@@ -4,6 +4,9 @@
   <img src="https://img.shields.io/badge/Python-3.10%E2%80%933.11-informational.svg" />
   <img src="https://img.shields.io/badge/AnnData-.h5ad%20native-blueviolet.svg" />
   <img src="https://img.shields.io/badge/Scanpy-compatible-brightgreen.svg" />
+  <a href="https://pypi.org/project/velot/">
+    <img src="https://img.shields.io/pypi/v/velot.svg" alt="PyPI">
+  </a>
 </p>
 
 <p align="center">
