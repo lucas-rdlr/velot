@@ -792,6 +792,12 @@ def group_positions_on_embedding(E: np.ndarray, codes: np.ndarray, K: int) -> np
             pos[k] = np.median(E[mask], axis=0)
     return pos
 
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from typing import List
+from matplotlib.patches import FancyArrowPatch
 
 def plot_paga_like_graph_on_embedding(
     E: np.ndarray,
@@ -800,14 +806,14 @@ def plot_paga_like_graph_on_embedding(
     confidence: np.ndarray,
     qvalue: np.ndarray,
     directed_flux: np.ndarray,
-    cfg: PagaLikeConnectivityConfig,
+    cfg: PagaLikeConnectivityConfig, # Assuming this is defined elsewhere
     prefix: str,
 ) -> str:
     path = os.path.join(cfg.output_dir, f"{prefix}_abstracted_graph_on_embedding.png")
     K = len(names)
-    pos = group_positions_on_embedding(E, codes, K)
+    pos = group_positions_on_embedding(E, codes, K) # Assuming this is defined elsewhere
 
-    fig, ax = plt.subplots(figsize=(8.0, 6.8))
+    fig, ax = plt.subplots(figsize=(8.0, 8))
     ax.scatter(E[:, 0], E[:, 1], s=4, alpha=0.18, linewidths=0)
 
     sizes = np.array([(codes == k).sum() for k in range(K)], dtype=float)
@@ -827,33 +833,153 @@ def plot_paga_like_graph_on_embedding(
             if a == b:
                 continue
             if directed_flux[a, b] >= cfg.graph_directed_edge_threshold:
-                dx, dy = pos[b] - pos[a]
-                shrink = 0.15
-                ax.arrow(
-                    pos[a, 0] + shrink * dx,
-                    pos[a, 1] + shrink * dy,
-                    (1 - 2 * shrink) * dx,
-                    (1 - 2 * shrink) * dy,
-                    length_includes_head=True,
-                    head_width=0.025 * max(np.ptp(E[:, 0]), np.ptp(E[:, 1])),
-                    head_length=0.035 * max(np.ptp(E[:, 0]), np.ptp(E[:, 1])),
+                
+                # Calculate exact node radius in points to stop arrows perfectly at the edge
+                radius_a = np.sqrt(node_sizes[a] / np.pi)
+                radius_b = np.sqrt(node_sizes[b] / np.pi)
+                
+                arrow = FancyArrowPatch(
+                    pos[a], 
+                    pos[b], 
+                    connectionstyle="arc3,rad=0.15", 
+                    arrowstyle="simple,head_width=5,head_length=6,tail_width=1.5",
+                    color="black",          # Changed from "tab:red" to "black"
+                    alpha=0.4,
                     lw=0.8 + 2.5 * directed_flux[a, b],
-                    alpha=0.35,
-                    color="tab:red",
-                    zorder=2,
+                    shrinkA=radius_a + 2,   # Dynamic shrink based on start node size
+                    shrinkB=radius_b + 2,   # Dynamic shrink based on end node size
+                    zorder=2
                 )
+                ax.add_patch(arrow)
 
-    ax.scatter(pos[:, 0], pos[:, 1], s=node_sizes, c=np.arange(K), cmap="tab20", edgecolor="white", lw=1.0, zorder=3)
+    # 1. Changed edgecolor="white" to edgecolor="black"
+    ax.scatter(pos[:, 0], pos[:, 1], s=node_sizes, c=np.arange(K), cmap="tab20", 
+               edgecolor="black", lw=1.0, zorder=3)
+               
+    # # 3. Removed bbox (frame) and forced color="black"
+    # for k, name in enumerate(names):
+    #     ax.text(pos[k, 0], pos[k, 1], str(name), ha="center", va="center", 
+    #             fontsize=8, color="black", weight="bold", zorder=4)
+
+    # 3. Dynamic labels placed just above the node radius
     for k, name in enumerate(names):
-        ax.text(pos[k, 0], pos[k, 1], str(name), ha="center", va="center", fontsize=8,
-                bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="black", lw=0.4, alpha=0.85), zorder=4)
+        # Calculate the exact radius of this specific node in points
+        radius_pt = np.sqrt(node_sizes[k] / np.pi)
+        
+        ax.annotate(
+            str(name),
+            xy=(pos[k, 0], pos[k, 1]),        # Anchor exactly at the center of the node
+            xytext=(0, radius_pt + 3),        # Offset by 0 points horizontally, and (radius + 3) points vertically
+            textcoords="offset points",       # Tell matplotlib the offset is in display points, not data units
+            ha="center",                      # Center horizontally above the node
+            va="bottom",                      # Align the bottom of the text to the offset point
+            fontsize=8,
+            color="black",
+            weight="bold",
+            zorder=4
+        )
 
-    ax.set_title("PAGA-like topology + vector-field directionality", fontsize=13, weight="bold")
+    # ax.set_title("PAGA-like topology + vector-field directionality", fontsize=13, weight="bold")
     ax.set_xlabel("Embedding 1")
     ax.set_ylabel("Embedding 2")
     sns.despine(ax=ax)
-    savefig(path, cfg)
+    umap_axis(ax, linewidth=2)
+    savefig(path, cfg) # Assuming this is defined elsewhere
     return path
+
+def umap_axis(ax, pos=(0.02, 0.02), length=0.15, fontsize=9, linewidth=1.2):
+    x0, y0 = pos
+    ax.axis("off")
+    ax.annotate("", xy=(x0 + length, y0), xytext=(x0, y0),
+                xycoords="axes fraction",
+                arrowprops=dict(arrowstyle="->", lw=linewidth, color="black"))
+    ax.annotate("", xy=(x0, y0 + length), xytext=(x0, y0),
+                xycoords="axes fraction",
+                arrowprops=dict(arrowstyle="->", lw=linewidth, color="black"))
+    ax.text(x0 + length, y0 - 0.02, "UMAP1",
+            transform=ax.transAxes, ha="right", va="top", fontsize=fontsize)
+    ax.text(x0 - 0.02, y0 + length, "UMAP2",
+            transform=ax.transAxes, ha="right", va="top",
+            rotation=90, fontsize=fontsize)
+
+
+# def plot_paga_like_graph_on_embedding(
+#     E: np.ndarray,
+#     codes: np.ndarray,
+#     names: List[str],
+#     confidence: np.ndarray,
+#     qvalue: np.ndarray,
+#     directed_flux: np.ndarray,
+#     cfg: PagaLikeConnectivityConfig,
+#     prefix: str,
+# ) -> str:
+#     path = os.path.join(cfg.output_dir, f"{prefix}_abstracted_graph_on_embedding.png")
+#     K = len(names)
+#     pos = group_positions_on_embedding(E, codes, K)
+
+#     fig, ax = plt.subplots(figsize=(8.0, 6.8))
+#     ax.scatter(E[:, 0], E[:, 1], s=4, alpha=0.18, linewidths=0)
+
+#     sizes = np.array([(codes == k).sum() for k in range(K)], dtype=float)
+#     node_sizes = 280 + 2200 * sizes / max(sizes.max(), 1)
+
+#     # Undirected confident edges
+#     for a in range(K):
+#         for b in range(a + 1, K):
+#             if confidence[a, b] >= cfg.graph_edge_threshold and qvalue[a, b] <= cfg.edge_qvalue_threshold:
+#                 lw = 0.5 + 5.0 * confidence[a, b]
+#                 ax.plot([pos[a, 0], pos[b, 0]], [pos[a, 1], pos[b, 1]],
+#                         color="black", lw=lw, alpha=0.45, zorder=1)
+
+#     # Directed flux arrows for asymmetric transitions
+#     for a in range(K):
+#         for b in range(K):
+#             if a == b:
+#                 continue
+#             if directed_flux[a, b] >= cfg.graph_directed_edge_threshold:
+#                 dx, dy = pos[b] - pos[a]
+#                 # shrink = 0.15
+#                 # ax.arrow(
+#                 #     pos[a, 0] + shrink * dx,
+#                 #     pos[a, 1] + shrink * dy,
+#                 #     (1 - 2 * shrink) * dx,
+#                 #     (1 - 2 * shrink) * dy,
+#                 #     length_includes_head=True,
+#                 #     head_width=0.025 * max(np.ptp(E[:, 0]), np.ptp(E[:, 1])),
+#                 #     head_length=0.035 * max(np.ptp(E[:, 0]), np.ptp(E[:, 1])),
+#                 #     lw=0.8 + 2.5 * directed_flux[a, b],
+#                 #     alpha=0.35,
+#                 #     color="tab:red",
+#                 #     zorder=2,
+#                 # )
+
+#                 from matplotlib.patches import FancyArrowPatch
+#                 shrink = 0.15
+#                 arrow = FancyArrowPatch(
+#                     pos[a], # Start point
+#                     pos[b], # End point
+#                     connectionstyle="arc3,rad=0.15", # Adds a subtle, elegant curve
+#                     arrowstyle="simple,head_width=5,head_length=6,tail_width=1.5",
+#                     color="tab:red",
+#                     alpha=0.6,
+#                     lw=0.8 + 2.5 * directed_flux[a, b],
+#                     shrinkA=shrink * 100, # Shrink from start (in points)
+#                     shrinkB=shrink * 100, # Shrink from end (in points)
+#                     zorder=2
+#                 )
+#                 ax.add_patch(arrow)
+
+#     ax.scatter(pos[:, 0], pos[:, 1], s=node_sizes, c=np.arange(K), cmap="tab20", edgecolor="white", lw=1.0, zorder=3)
+#     for k, name in enumerate(names):
+#         ax.text(pos[k, 0], pos[k, 1], str(name), ha="center", va="center", fontsize=8,
+#                 bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="black", lw=0.4, alpha=0.85), zorder=4)
+
+#     ax.set_title("PAGA-like topology + vector-field directionality", fontsize=13, weight="bold")
+#     ax.set_xlabel("Embedding 1")
+#     ax.set_ylabel("Embedding 2")
+#     sns.despine(ax=ax)
+#     savefig(path, cfg)
+#     return path
 
 
 def plot_edge_significance(
@@ -923,36 +1049,119 @@ def plot_group_diagnostics(
     return path
 
 
+# def plot_vector_field_on_embedding(
+#     E: np.ndarray,
+#     Z: np.ndarray,
+#     V: Optional[np.ndarray],
+#     cfg: PagaLikeConnectivityConfig,
+# ) -> Optional[str]:
+#     if V is None:
+#         return None
+
+#     path = os.path.join(cfg.output_dir, "shared_vector_field_on_embedding.png")
+#     Z_future = Z + 0.15 * V
+#     nn = NearestNeighbors(n_neighbors=1).fit(Z)
+#     _, ind = nn.kneighbors(Z_future)
+#     E_future = E[ind[:, 0]]
+#     dE = E_future - E
+
+#     rng = np.random.default_rng(cfg.random_state)
+#     idx = np.arange(E.shape[0])
+#     if E.shape[0] > cfg.max_arrows_plot:
+#         idx = rng.choice(idx, size=cfg.max_arrows_plot, replace=False)
+
+#     fig, ax = plt.subplots(figsize=(7.2, 6.2))
+#     ax.scatter(E[:, 0], E[:, 1], s=4, alpha=0.20, linewidths=0)
+#     ax.quiver(E[idx, 0], E[idx, 1], dE[idx, 0], dE[idx, 1],
+#               angles="xy", scale_units="xy", scale=1.0, width=0.0022, alpha=0.58)
+#     ax.set_title("Vector field projected to embedding", fontsize=13, weight="bold")
+#     ax.set_xlabel("Embedding 1")
+#     ax.set_ylabel("Embedding 2")
+#     sns.despine(ax=ax)
+#     savefig(path, cfg)
+#     return path
+
+import scvelo as scv
+
 def plot_vector_field_on_embedding(
-    E: np.ndarray,
-    Z: np.ndarray,
-    V: Optional[np.ndarray],
+    adata,  # Replaced E, Z, V with the AnnData object
     cfg: PagaLikeConnectivityConfig,
 ) -> Optional[str]:
+    
+    # 1. Extract necessary arrays from adata
+    # Using .get to safely check if the velocity exists
+    V = adata.obsm.get("velot_quantum_metaflow_velocity_latent_final")
     if V is None:
         return None
 
+    Z = adata.obsm["X_velot_quantum_metaflow_latent_scaled"]
+    
+    # Assuming 'umap' basis translates to 'X_umap' in obsm, which is standard
+    E = adata.obsm["X_umap"] 
+
     path = os.path.join(cfg.output_dir, "shared_vector_field_on_embedding.png")
+    
+    # 2. Calculate the projected future states in the embedding
     Z_future = Z + 0.15 * V
     nn = NearestNeighbors(n_neighbors=1).fit(Z)
     _, ind = nn.kneighbors(Z_future)
     E_future = E[ind[:, 0]]
     dE = E_future - E
 
+    # 3. Subsample arrows to avoid overcrowding
     rng = np.random.default_rng(cfg.random_state)
     idx = np.arange(E.shape[0])
     if E.shape[0] > cfg.max_arrows_plot:
         idx = rng.choice(idx, size=cfg.max_arrows_plot, replace=False)
 
-    fig, ax = plt.subplots(figsize=(7.2, 6.2))
-    ax.scatter(E[:, 0], E[:, 1], s=4, alpha=0.20, linewidths=0)
+    fig, ax = plt.subplots(figsize=(8,8))
+    scv.pl.scatter(
+        adata, 
+        basis="umap", 
+        color="velot_vampflow_state", 
+        ax=ax,               # <--- This anchors scvelo to our matplotlib figure
+        show=False,          # <--- Critical: prevents scvelo from closing the figure immediately
+        title="",            # We will set a custom title below
+        frameon=False, 
+        legend_loc="on data",
+        palette="tab20"
+    )
+    umap_axis(ax, linewidth=2)
+    fig.savefig("metastates.png", dpi=300, bbox_inches="tight")
+    plt.close()
+
+    # 4. Set up the figure and axis
+    fig, ax = plt.subplots(figsize=(8,8))
+
+    # 5. Plot the scvelo scatter directly onto our custom 'ax'
+    scv.pl.scatter(
+        adata, 
+        basis="umap", 
+        color="velot_vampflow_state", 
+        ax=ax,               # <--- This anchors scvelo to our matplotlib figure
+        show=False,          # <--- Critical: prevents scvelo from closing the figure immediately
+        title="",            # We will set a custom title below
+        frameon=False, 
+        legend_loc="on data",
+        palette="tab20"
+    )
+
+    # 6. Overlay the quiver plot on the same axis
+    # Added zorder=3 to ensure arrows render on top of the scvelo scatter points
     ax.quiver(E[idx, 0], E[idx, 1], dE[idx, 0], dE[idx, 1],
-              angles="xy", scale_units="xy", scale=1.0, width=0.0022, alpha=0.58)
-    ax.set_title("Vector field projected to embedding", fontsize=13, weight="bold")
-    ax.set_xlabel("Embedding 1")
-    ax.set_ylabel("Embedding 2")
-    sns.despine(ax=ax)
-    savefig(path, cfg)
+              angles="xy", scale_units="xy", scale=10, width=0.0022, alpha=0.4, color="black", zorder=3)
+    
+    # 7. Final styling
+    # ax.set_title("Vector field projected to embedding", fontsize=13, weight="bold")
+    
+    # Optional: scvelo usually removes axes labels when frameon=False, 
+    # but if you want to force them back on, keep these lines:
+    umap_axis(ax, linewidth=2)
+    
+    savefig(path, cfg) # Assuming this is defined elsewhere
+    
+    # Important: Since show=False was passed to scvelo, you might want to call plt.close(fig) 
+    # if you are running this in a loop to prevent memory leaks, depending on your savefig implementation.
     return path
 
 
@@ -1236,7 +1445,9 @@ def run_velot_paga_like_connectivity_analysis(
     print(f"[graph] source={graph_source}, shape={A.shape}, nnz={A.nnz}")
 
     shared_paths = {}
-    shared_paths["vector_field_embedding"] = plot_vector_field_on_embedding(E, Z, V, cfg)
+    print(adata)
+    # shared_paths["vector_field_embedding"] = plot_vector_field_on_embedding(E, Z, V, cfg)
+    shared_paths["vector_field_embedding"] = plot_vector_field_on_embedding(adata, cfg)
 
     results: Dict[str, object] = {
         "adata": adata,

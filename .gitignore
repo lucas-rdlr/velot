@@ -24,6 +24,7 @@ scvelo2/
 notebooks/agusti/
 notebooks/extra/
 notebooks/supplementary/*/
+notebooks/vamp/*/
 
 *.egg-info/
 build/
