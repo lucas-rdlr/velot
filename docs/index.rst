@@ -9,21 +9,6 @@ VelOT Documentation
    <img src="https://img.shields.io/badge/Scanpy-compatible-brightgreen.svg" />
    </p>
 
-   <p align="center">
-   <a href="LICENSE">
-      <img alt="License" src="https://img.shields.io/badge/License-MIT-green.svg">
-   </a>
-   <a href="https://pypi.org/project/h5adify/">
-      <img alt="PyPI" src="https://img.shields.io/pypi/v/h5adify.svg">
-   </a>
-   <a href="https://test.pypi.org/project/h5adify/">
-      <img alt="TestPyPI" src="https://img.shields.io/badge/TestPyPI-available-orange.svg">
-   </a>
-   <a href="https://velot.readthedocs.io">
-      <img alt="Documentation" src="https://readthedocs.org/projects/velot/badge/?version=latest">
-   </a>
-   </p>
-
 **VelOT** (Velocity via Optimal Transport) is a kinetic-free framework
 for estimating RNA velocity from single-cell transcriptomic data.
 
@@ -126,6 +111,8 @@ Quick Example
    citation
    contributing
 
+* :ref:`genindex`
+
 If you use **VelOT** in your research, please cite:
 
 .. code-block:: bibtex
@@ -138,8 +125,3 @@ If you use **VelOT** in your research, please cite:
    year    = {2026},
    doi     = {10.1101/2026.XX.XX.XXXXXX}
    }
-
-Indices and tables
-==================
-* :ref:`genindex`
-* :ref:`search`
