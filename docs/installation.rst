@@ -13,7 +13,7 @@ Requirements
    for installation options.
 
 Quick install (recommended)
---------------------------
+---------------------------
 
 .. code-block:: bash
 
