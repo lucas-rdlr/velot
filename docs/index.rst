@@ -135,7 +135,7 @@ If you use **VelOT** in your research, please cite:
 
 .. code-block:: bibtex
 
-   @article {Rincon de la Rosa2026.06.04.730132,
+   @article {velot2026,
       author = {Rincon de la Rosa, Lucas and Perez Garcia, David and Alentorn, Agusti},
       title = {VelOT: kinetic-free RNA velocity inference via optimal transport, flow-field smoothing, and VAMP coarse-graining of cellular dynamics},
       elocation-id = {2026.06.04.730132},
