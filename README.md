@@ -31,8 +31,11 @@ an optimal transport problem in gene expression space, producing smooth,
 continuous velocity fields without requiring spliced/unspliced count
 matrices.
 
-> **Paper:** *VelOT: kinetic-free RNA velocity inference via optimal transport, flow-field smoothing, and VAMP coarse-graining of cellular dynamics*
-> — [Preprint (coming soon)](#citation)
+> **Paper:** Rincón de la Rosa L, Pérez García D, Alentorn A.
+> *VelOT: kinetic-free RNA velocity inference via optimal transport,
+> flow-field smoothing, and VAMP coarse-graining of cellular dynamics.*
+> bioRxiv (2026).
+> [https://doi.org/10.64898/2026.06.04.730132](https://doi.org/10.64898/2026.06.04.730132)
 
 <p align="center">
   <img src="article/figures/figure 1/panel1.png" width="800">
@@ -236,22 +239,17 @@ For the detailed mathematical methodology, see the
 [Methods section](https://velot.readthedocs.io/en/latest/methodology.html)
 of the documentation or the accompanying paper.
 
-## Reproducibility
+## Data and Reproducibility
 
 Scripts to reproduce all figures and benchmarks from the paper are in
-the [`article/`](article/) directory:
+the [`article/`](article/) directory.
 
-```bash
-# Reproduce a specific dataset analysis
-python article/real_pancreas_dataset.py
-
-# Reproduce benchmark results
-python article/benchmark/real/pancreas_velot.py
-python article/benchmark/real/pancreas_scvelo_dynamic.py
-
-# Generate benchmark figures
-jupyter notebook article/benchmark/benchmark_figures.ipynb
-```
+| Resource | Link |
+|----------|------|
+| **Preprint** | [![bioRxiv](https://img.shields.io/badge/bioRxiv-2026.06.04.730132-b31b1b.svg)](https://doi.org/10.64898/2026.06.04.730132) |
+| **Benchmark data, model weights, and frozen outputs** | [![Data DOI](https://img.shields.io/badge/Zenodo_data-10.5281%2Fzenodo.20542878-blue)](https://doi.org/10.5281/zenodo.20542878) |
+| **Archived source code** | [![Code DOI](https://zenodo.org/badge/1231780756.svg)](https://doi.org/10.5281/zenodo.20542877) |
+| **Documentation** | [![Docs](https://readthedocs.org/projects/velot/badge/?version=latest)](https://velot.readthedocs.io) |
 
 ## Citation
 

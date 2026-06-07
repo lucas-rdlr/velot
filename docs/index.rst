@@ -7,6 +7,24 @@ VelOT Documentation
    <img src="https://img.shields.io/badge/Python-3.10%E2%80%933.11-informational.svg" />
    <img src="https://img.shields.io/badge/AnnData-.h5ad%20native-blueviolet.svg" />
    <img src="https://img.shields.io/badge/Scanpy-compatible-brightgreen.svg" />
+   <a href="https://pypi.org/project/velot/">
+      <img src="https://img.shields.io/pypi/v/velot.svg" alt="PyPI">
+   </a>
+   </p>
+
+   <p align="center">
+   <a href="LICENSE">
+      <img alt="License" src="https://img.shields.io/badge/License-MIT-green.svg">
+   </a>
+   <a href="https://velot.readthedocs.io">
+      <img alt="Documentation" src="https://readthedocs.org/projects/velot/badge/?version=latest">
+   </a>
+   <a href="https://doi.org/10.5281/zenodo.20542878">
+      <img alt="DOI" src="https://zenodo.org/badge/DOI/10.5281/zenodo.20542878.svg">
+   </a>
+   <a href="https://doi.org/10.5281/zenodo.20530116">
+      <img alt="Data DOI" src="https://img.shields.io/badge/Zenodo-data-blue.svg">
+   </a>
    </p>
 
 **VelOT** (Velocity via Optimal Transport) is a kinetic-free framework
@@ -117,11 +135,14 @@ If you use **VelOT** in your research, please cite:
 
 .. code-block:: bibtex
 
-   @article{velot2026,
-   title   = {VelOT: kinetic-free RNA velocity inference via optimal transport,
-              flow-field smoothing, and VAMP coarse-graining of cellular dynamics},
-   author  = {Rincon de la Rosa, Lucas},
-   journal = {bioRxiv},
-   year    = {2026},
-   doi     = {10.1101/2026.XX.XX.XXXXXX}
-   }
+   @article {Rincon de la Rosa2026.06.04.730132,
+      author = {Rincon de la Rosa, Lucas and Perez Garcia, David and Alentorn, Agusti},
+      title = {VelOT: kinetic-free RNA velocity inference via optimal transport, flow-field smoothing, and VAMP coarse-graining of cellular dynamics},
+      elocation-id = {2026.06.04.730132},
+      year = {2026},
+      doi = {10.64898/2026.06.04.730132},
+      publisher = {Cold Spring Harbor Laboratory},
+      URL = {https://www.biorxiv.org/content/early/2026/06/06/2026.06.04.730132},
+      eprint = {https://www.biorxiv.org/content/early/2026/06/06/2026.06.04.730132.full.pdf},
+      journal = {bioRxiv}
+      }

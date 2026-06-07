@@ -1,22 +1,29 @@
 cff-version: 1.2.0
-title: "VelOT: Velocity via Optimal Transport"
-message: "If you use this software, please cite it as below."
+message: "If you use this software, please cite the preprint below."
+title: "VelOT"
 type: software
-authors:
-  - family-names: "Rincon de la Rosa"
-    given-names: "Lucas"
-    orcid: ""  # Add your ORCID if you have one
-repository-code: "https://github.com/lucas-rdlr/velot"
-url: "https://velot.readthedocs.io"
+version: 1.0.0
 license: MIT
-version: "1.0.0"
-date-released: "2026-01-01"
+repository-code: "https://github.com/lucas-rdlr/velot"
+authors:
+  - family-names: "Rincón de la Rosa"
+    given-names: "Lucas"
+  - family-names: "Pérez García"
+    given-names: "David"
+  - family-names: "Alentorn"
+    given-names: "Agustí"
 preferred-citation:
   type: article
-  title: "VelOT: kinetic-free RNA velocity inference via optimal transport, flow-field smoothing, and VAMP coarse-graining of cellular dynamics"
+  title: "VelOT: kinetic-free RNA velocity inference via optimal transport, 
+  flow-field smoothing, and VAMP coarse-graining of cellular dynamics"
   authors:
-    - family-names: "Rincon de la Rosa"
+    - family-names: "Rincón de la Rosa"
       given-names: "Lucas"
+    - family-names: "Pérez García"
+      given-names: "David"
+    - family-names: "Alentorn"
+      given-names: "Agustí"
   journal: "bioRxiv"
   year: 2026
-  doi: "10.1101/2026.XX.XX.XXXXXX"
+  doi: "10.64898/2026.06.04.730132"
+  url: "https://www.biorxiv.org/content/10.64898/2026.06.04.730132"
