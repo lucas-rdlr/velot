@@ -2,6 +2,8 @@ data/
 datasets/
 *.h5ad
 
+results/
+
 /article/real_bonemarrow_dataset.py
 /article/real_dendate_dataset.py
 /article/real_hindbrain_dataset.py
@@ -10,7 +12,8 @@ datasets/
 /article/benchmark/benchmark_results/
 
 /article/figures/supplementary/
-/article/figures/figure 1/extra/
+/article/revision/article_figures/supplementary/
+extra/
 
 
 scvelo/
@@ -32,5 +35,7 @@ build/
 dist/
 
 __pycache__/
+.vscode/
+*.bak
 
 docs/_build/
