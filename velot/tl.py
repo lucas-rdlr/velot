@@ -20,7 +20,7 @@ Step-by-step usage::
 from __future__ import annotations
 
 import warnings
-from typing import Optional
+from typing import Optional, Sequence
 
 import numpy as np
 from anndata import AnnData
@@ -235,8 +235,368 @@ def build_windows(
 
 
 # =====================================================================
+# 1b. WINDOW DIAGNOSTICS (how to choose window_size, reg and reg_m)
+# =====================================================================
+
+
+def _basis_suffix(adata, basis):
+    """``"X_pca"`` -> ``"pca"``: the tag VelOT names its obsm keys with.
+
+    Any embedding in ``adata.obsm`` may be used as the working basis, not
+    just the PCA and the UMAP, so the tag is derived from the name rather
+    than picked from a fixed pair.
+    """
+    if not isinstance(basis, str) or not basis.startswith("X_"):
+        raise ValueError(f"basis must be an obsm key of the form 'X_<name>', "
+                         f"got {basis!r}")
+    if basis not in adata.obsm:
+        raise KeyError(f"basis {basis!r} not found in adata.obsm; "
+                       f"available: {sorted(adata.obsm)}")
+    return basis.split("X_", 1)[1]
+
+
+def window_diagnostics(
+    adata: AnnData,
+    basis: str = "X_pca",
+    window_sizes: Sequence[int] = (50, 100, 200, 400, 800),
+    overlap_fraction: float = 0.0,
+    n_clusters: Optional[int] = 1,
+    spatial_key: Optional[str] = None,
+    min_window_size: int = 20,
+    tail_handling: str = "drop",
+    tail_threshold: int = 10,
+    random_state: int = 42,
+    verbose: bool = True,
+):
+    """
+    Report, per candidate ``window_size``, how far consecutive windows sit
+    apart compared with the spacing between neighbouring cells. No OT is
+    solved, so this is cheap.
+
+    Everything is measured in units of ``delta`` = the median distance
+    from a source cell to its nearest other source cell (the sampling
+    resolution of the data). For each window pair,
+
+        move = distance from a source cell to its CHEAPEST target,
+
+    and ``move / delta`` is the number of spacings a cell has to travel.
+    That single number drives the three settings that matter:
+
+    * **window_size** sets the signal. At ``move/delta`` near 1 the real
+      displacement is the size of the local scatter, so which target a
+      sharp plan picks is mostly sampling noise: the raw field is noisy
+      (low ICCoh) even when it is right on average (CBDir near 1).
+      Larger windows move the targets further away and raise that ratio,
+      but each window then spans more pseudotime, so genuine change gets
+      averaged inside it. Aim for the smallest window that gets
+      ``move/delta`` clearly above 1 while each window still covers a
+      small slice of pseudotime (``dtau`` column).
+    * **reg** (with ``cost_scale="nn"``) is the blur of the plan in the
+      same units: the plan spreads over roughly ``sqrt(reg)`` spacings,
+      so keep ``reg`` at or below ``move2_median`` - beyond that the plan
+      washes out into the window mean.
+    * **reg_m** (unbalanced OT) is the give-up threshold in those units.
+      A cell keeps its mass when its cheapest move costs less than about
+      ``reg_m`` and drops it when the cost is far beyond. Put it between
+      the bulk of the moves and the dead ends: a few times
+      ``move2_p90``, and well below ``move2_max`` if that maximum comes
+      from terminal windows you want the model to recognise.
+
+    So the natural ordering is
+
+        reg  <=  move2_median  <  reg_m  <<  (dead-end moves)
+
+    Parameters
+    ----------
+    adata
+        Needs ``adata.obsm[basis]`` and ``adata.obs['pseudotime']``.
+    window_sizes
+        Candidate window sizes to report.
+    overlap_fraction, n_clusters, spatial_key, min_window_size,
+    tail_handling, tail_threshold, random_state
+        Passed to :func:`build_windows`, so the windows are exactly the
+        ones the pipeline would use.
+
+    Returns
+    -------
+    pandas.DataFrame, one row per window size:
+
+    ``n_pairs``
+        number of window pairs.
+    ``no_source``
+        fraction of cells that are never a source, so get no raw velocity.
+    ``dtau``
+        median pseudotime span of a window (fraction of the full range).
+    ``move2_median`` / ``move2_p90`` / ``move2_max``
+        SQUARED cheapest move in units of delta^2, summarised over pairs.
+        These are the units of ``reg`` and ``reg_m``.
+    ``move_median``
+        the same as a distance (``sqrt`` of the above): "how many spacings
+        a cell travels between consecutive windows".
+    """
+    import pandas as pd
+
+    _check_fields(adata, obsm_keys=[basis], obs_keys=["pseudotime"])
+    X = np.asarray(adata.obsm[basis], dtype=np.float64)
+    tau = adata.obs["pseudotime"].values.astype(np.float64)
+    tau_range = float(np.ptp(tau)) or 1.0
+
+    keep_windows = adata.uns.get("velot_windows", None)
+    rows = []
+    for ws in window_sizes:
+        ad = adata  # build_windows only writes uns/obs keys
+        build_windows(
+            ad, basis=basis, n_clusters=n_clusters, window_size=int(ws),
+            overlap_fraction=overlap_fraction,
+            min_window_size=min_window_size, spatial_key=spatial_key,
+            tail_handling=tail_handling, tail_threshold=tail_threshold,
+            random_state=random_state,
+        )
+        pairs = ad.uns["velot_windows"]["pairs"]
+        moves, dtaus, sources = [], [], set()
+        for idx_s, idx_t in pairs:
+            idx_s, idx_t = np.asarray(idx_s), np.asarray(idx_t)
+            sources.update(idx_s.tolist())
+            delta2 = _pair_nn_scale(X[idx_s], fallback=1.0)
+            d2 = pot.dist(X[idx_s], X[idx_t], metric="sqeuclidean")
+            moves.append(float(np.median(d2.min(axis=1))) / max(delta2, 1e-12))
+            dtaus.append(float(np.ptp(tau[idx_s])) / tau_range)
+        rows.append(dict(
+            window_size=int(ws), n_pairs=len(pairs),
+            no_source=1.0 - len(sources) / adata.n_obs,
+            dtau=float(np.median(dtaus)) if dtaus else float("nan"),
+            move2_median=float(np.median(moves)) if moves else float("nan"),
+            move2_p90=float(np.percentile(moves, 90)) if moves else float("nan"),
+            move2_max=float(np.max(moves)) if moves else float("nan"),
+            move_median=float(np.sqrt(np.median(moves))) if moves else float("nan"),
+        ))
+
+    if keep_windows is not None:
+        adata.uns["velot_windows"] = keep_windows
+    else:
+        adata.uns.pop("velot_windows", None)
+
+    df = pd.DataFrame(rows).set_index("window_size")
+    if verbose:
+        print("\nWindow diagnostics (distances in units of the nearest-"
+              "neighbour spacing)")
+        print(df.round(3).to_string())
+        print("  reg <= move2_median  <  reg_m  <<  dead-end moves")
+    return df
+
+
+def choose_window_size(
+    adata: AnnData,
+    candidates: Sequence[int] = (50, 100, 200, 300, 500, 800),
+    target_move: float = 2.0,
+    max_dtau: float = 0.10,
+    max_no_source: float = 0.10,
+    basis: str = "X_pca",
+    verbose: bool = True,
+    **window_kwargs,
+):
+    """
+    Pick ``window_size`` from the geometry of the data, not from a metric.
+
+    A window is ELIGIBLE when it spans at most ``max_dtau`` of the
+    pseudotime range and leaves at most ``max_no_source`` of the cells
+    without a raw estimate (the cells of the final window of each
+    cluster, which are never a source). Among those, the choice is the
+    SMALLEST window whose typical move reaches ``target_move``, in units
+    of the squared nearest-neighbour spacing — 2.0 is about 1.4 spacings,
+    where the drift between consecutive windows starts to exceed the
+    local scatter.
+
+    In a dense dataset no window reaches that: the nearest cell of the
+    next window stays about one spacing away however wide the window is.
+    The raw field is then noise-dominated whatever you choose, and the
+    function takes the eligible window with the largest typical move,
+    reporting that the target was not met. Treat a low raw ICCoh on such
+    a dataset as a property of the data, not of the estimator.
+
+    Choosing the window this way keeps the parameter out of the metrics
+    it is later judged by.
+
+    Returns
+    -------
+    (window_size, table) - the choice and the full diagnostics frame.
+    The table carries ``eligible`` and ``chosen`` columns and the
+    attribute ``table.attrs["target_met"]``.
+    """
+    table = window_diagnostics(adata, basis=basis, window_sizes=candidates,
+                               verbose=False, **window_kwargs)
+    eligible = ((table["dtau"] <= max_dtau)
+                & (table["no_source"] <= max_no_source))
+    table["eligible"] = eligible
+    ok = table[eligible & (table["move2_median"] >= target_move)]
+    target_met = bool(len(ok))
+    if target_met:
+        choice = int(ok.index[0])
+        why = (f"smallest eligible window with move2 >= {target_move} "
+               f"(dtau <= {max_dtau}, no_source <= {max_no_source})")
+    elif eligible.any():
+        choice = int(table[eligible]["move2_median"].idxmax())
+        why = ("no eligible window reaches move2 >= "
+               f"{target_move}: the data are dense and the raw field is "
+               "noise-dominated at every window size; took the eligible "
+               "window with the largest typical move")
+    else:
+        choice = int(table.index[0])
+        why = "no eligible window at all; took the smallest candidate"
+    table["chosen"] = table.index == choice
+    table.attrs["target_met"] = target_met
+    if verbose:
+        print(table.round(3).to_string())
+        print(f"  chosen window_size = {choice}\n    {why}")
+    return choice, table
+
+
+# =====================================================================
 # 2. OPTIMAL TRANSPORT VELOCITY
 # =====================================================================
+
+
+# On a GPU the convergence test forces a synchronisation, so it is only
+# made every few iterations; the loop may overshoot by that many.
+_SINKHORN_CHECK_EVERY = 10
+# Below this many entries the cost matrix is too small for a GPU to pay
+# for its launch overhead, and the numpy path is used instead.
+_SINKHORN_GPU_MIN_SIZE = 10_000
+
+
+def _lse(M, axis):
+    """log-sum-exp with the maximum shifted out.
+
+    ``scipy.special.logsumexp`` computes the same thing, but carries
+    enough extra machinery (weights, sign handling, input checking) to
+    dominate the cost on the small matrices a window pair produces: it
+    is ~4x slower at 50x50 and ~3x at 300x300, for differences of 1e-15.
+    An all -inf slice (a disconnected pair under cost_metric="geodesic")
+    gives a non-finite maximum, so the shift falls back to zero there
+    and the slice correctly returns -inf.
+    """
+    m = M.max(axis=axis, keepdims=True)
+    m = np.where(np.isfinite(m), m, 0.0)
+    return (m + np.log(np.exp(M - m).sum(axis=axis, keepdims=True))).squeeze(axis)
+
+
+def _log_sinkhorn_unbalanced(a, b, C, reg, reg_m, n_iter=5000, tol=1e-6):
+    """Log-domain Sinkhorn for entropic unbalanced OT with KL marginal
+    penalties (Chizat et al., 2018), stable for any cost range:
+
+        min_P <P, C> + reg KL(P | ab) + rho_a KL(P1 | a) + rho_b KL(P^T 1 | b)
+
+    ``reg_m`` is rho (same for both marginals) or (rho_a, rho_b); an
+    infinite value keeps that marginal exact.
+
+    Both backends run the identical recursion in float64 and agree to
+    ~1e-14. The work is O(n^2) per iteration, so the GPU is used only
+    for windows large enough to pay for the transfer; on CPU torch is
+    no faster than numpy, so numpy is used there.
+
+    ``tol`` is on the dual potential f, in units of ``reg``. The solver
+    is run to a direction, not to machine precision: against a 1e-9
+    solve, 1e-6 leaves the resulting velocity unchanged to 10 decimal
+    places. Pass a smaller value to recover the old behaviour exactly.
+    """
+    rho_a, rho_b = (reg_m, reg_m) if np.ndim(reg_m) == 0 else reg_m
+    ka = 1.0 if np.isinf(rho_a) else rho_a / (rho_a + reg)
+    kb = 1.0 if np.isinf(rho_b) else rho_b / (rho_b + reg)
+    thr = tol * reg
+
+    if (_HAS_TORCH and DEVICE is not None and DEVICE.type == "cuda"
+            and np.asarray(C).size >= _SINKHORN_GPU_MIN_SIZE):
+        opt = dict(dtype=torch.float64, device=DEVICE)
+        Ct = torch.as_tensor(np.asarray(C), **opt)
+        la = torch.as_tensor(np.log(a), **opt)
+        lb = torch.as_tensor(np.log(b), **opt)
+        f = torch.zeros_like(la)
+        g = torch.zeros_like(lb)
+        for i in range(n_iter):
+            f_old = f
+            f = -ka * reg * torch.logsumexp(
+                (g[None, :] - Ct) / reg + lb[None, :], dim=1)
+            g = -kb * reg * torch.logsumexp(
+                (f[:, None] - Ct) / reg + la[:, None], dim=0)
+            if (i % _SINKHORN_CHECK_EVERY == 0
+                    and torch.max(torch.abs(f - f_old)).item() < thr):
+                break
+        P = torch.exp((f[:, None] + g[None, :] - Ct) / reg
+                      + la[:, None] + lb[None, :])
+        return P.cpu().numpy()
+
+    la, lb = np.log(a), np.log(b)
+    f = np.zeros_like(a)
+    g = np.zeros_like(b)
+    for _ in range(n_iter):
+        f_old = f
+        f = -ka * reg * _lse((g[None, :] - C) / reg + lb[None, :], 1)
+        g = -kb * reg * _lse((f[:, None] - C) / reg + la[:, None], 0)
+        if np.max(np.abs(f - f_old)) < thr:
+            break
+    return np.exp((f[:, None] + g[None, :] - C) / reg + la[:, None] + lb[None, :])
+
+
+def _graph_weights(X: np.ndarray, knn_adj):
+    """Weighted kNN graph: every edge of the connectivity graph carries
+    the Euclidean distance between its endpoints. Used by
+    ``cost_metric="geodesic"``."""
+    from scipy import sparse
+    A = sparse.csr_matrix(knn_adj)
+    A = ((A + A.T) > 0).tocoo()
+    d = np.linalg.norm(X[A.row] - X[A.col], axis=1)
+    return sparse.csr_matrix((d, (A.row, A.col)), shape=A.shape)
+
+
+def _geodesic_distances(W, idx_source):
+    """Shortest-path distances from each source cell to every cell along
+    the kNN graph. Disconnected pairs come back as inf."""
+    from scipy.sparse.csgraph import dijkstra
+    return dijkstra(W, directed=False, indices=idx_source)
+
+
+def _pair_cell_moves(X, idx_source, idx_target, cost_metric="euclidean",
+                     graph_weights=None, knn_adj=None) -> np.ndarray:
+    """Per source cell, the squared distance to its cheapest target, in
+    units of the squared nearest-neighbour spacing of the source window.
+    This is the scale ``reg_m`` is measured in."""
+    X1 = X[idx_source]
+    if cost_metric == "geodesic":
+        W = graph_weights if graph_weights is not None \
+            else _graph_weights(X, knn_adj)
+        D = _geodesic_distances(W, idx_source) ** 2
+        finite = np.isfinite(D)
+        D[~finite] = 10.0 * D[finite].max() if finite.any() else 1.0
+        C = D[:, idx_target]
+        Dss = D[:, idx_source]
+        np.fill_diagonal(Dss, np.inf)
+        delta2 = float(np.median(Dss.min(axis=1))) if len(idx_source) > 1 else 1.0
+    else:
+        C = pot.dist(X1, X[idx_target], metric="sqeuclidean")
+        delta2 = _pair_nn_scale(X1, fallback=1.0)
+    if delta2 <= 0 or not np.isfinite(delta2):
+        return np.full(len(idx_source), np.nan)
+    return C.min(axis=1) / delta2
+
+
+def _pair_typical_move(X, idx_source, idx_target, **kw) -> float:
+    """Median over source cells of :func:`_pair_cell_moves`."""
+    return float(np.median(_pair_cell_moves(X, idx_source, idx_target, **kw)))
+
+
+def _pair_nn_scale(X1: np.ndarray, fallback: float) -> float:
+    """Median squared distance from each source cell to its nearest other
+    source cell. Used by ``cost_scale="nn"``."""
+    if X1.shape[0] < 2:
+        return fallback
+    D = pot.dist(X1, X1, metric="sqeuclidean")
+    np.fill_diagonal(D, np.inf)
+    nn = D.min(axis=1)
+    delta2 = float(np.median(nn))
+    if not np.isfinite(delta2) or delta2 <= 0:
+        pos = nn[np.isfinite(nn) & (nn > 0)]
+        delta2 = float(pos.min()) if pos.size else fallback
+    return delta2
 
 
 def _ot_velocity_pair(
@@ -248,13 +608,150 @@ def _ot_velocity_pair(
     reg: float = 0.05,
     lambda_time: float = 1.0,
     lambda_knn: float = 1.0,
-) -> np.ndarray:
+    unbalanced: bool = False,
+    reg_m: float = 1.0,
+    mask_self: bool = True,
+    use_graph: bool = True,
+    cost_metric: str = "euclidean",
+    cost_scale="max",
+    solver: str = "sinkhorn",
+    assignment: str = "barycentric",
+    graph_weights=None,
+    return_self_mass: bool = False,
+    return_info: bool = False,
+):
     """
     Compute OT-based velocity for one window pair.
 
     Returns velocity vectors for cells in the source window.
-    Adapted from the original VelOT compute_ot_velocity.
+
+    The cost between source cell i and target cell j is
+
+        C_ij = d2_ij / s
+               + (d2_max / s) * ( lambda_time * [tau_i > tau_j]
+                                  + lambda_knn * [j not a kNN neighbour of i] )
+
+    where d2 is the squared Euclidean distance and d2_max its maximum over
+    the pair. The penalties are always expressed relative to the largest
+    geometric cost, so ``lambda = 1`` means "as costly as the farthest
+    pair" whatever ``cost_scale`` is. With the default ``cost_scale="max"``
+    (s = d2_max) this is exactly the original VelOT cost.
+
+    Parameters
+    ----------
+    unbalanced
+        If True, solve the unbalanced entropic OT problem
+        (``ot.unbalanced.sinkhorn_unbalanced``) instead of the balanced
+        one. Unbalanced OT relaxes the requirement that all source mass
+        be transported and all target mass be received, which is the
+        appropriate model when the two windows differ in size because of
+        proliferation, cell death, or uneven lineage sampling rather
+        than because of pure displacement.
+    reg_m
+        Marginal relaxation strength for the unbalanced problem, in units
+        of the squared nearest-neighbour spacing INSIDE the source window
+        (``delta2``): ``reg_m=25`` means "giving up a unit of mass costs
+        about as much as moving 5 spacings". Mass is then kept wherever an
+        ordinary target is within that reach and dropped where the nearest
+        target is much further - a terminal state. The unit is local to the
+        source window, so it does not depend on ``cost_scale`` or
+        ``cost_metric``, and it does not rescale itself away in a pair
+        whose targets are all far. To choose it, look at the per-pair
+        ``typical_move`` diagnostic (the median cheapest move, in the same
+        spacing units), printed by :func:`compute_ot_velocity`: pick a
+        ``reg_m`` above the usual value and below the dead-end ones.
+        A tuple ``(reg_m_source, reg_m_target)`` relaxes the two marginals
+        separately (``float("inf")`` keeps one exact).
+    mask_self
+        If True, forbid transport from a cell to itself. This matters
+        only when source and target windows overlap: an identical pair
+        has zero displacement and incurs no backward-pseudotime
+        penalty, so it is maximally favorable under the OT objective
+        and would bias the expected displacement toward zero.
+    cost_metric
+        How the geometric cost d2 is measured.
+
+        ``"euclidean"`` (default)
+            Squared straight-line distance, as in the original estimator.
+        ``"geodesic"``
+            Squared shortest-path distance along the kNN graph of ALL
+            cells. Reaching a cell on another branch then costs the whole
+            path back through the branch point, which makes such transport
+            expensive without forbidding it: unlike ``lambda_knn`` it
+            leaves far targets along the same branch reachable, so the
+            estimator does not collapse onto each cell's neighbours.
+            Needs ``knn_adj`` (or ``graph_weights``). Pairs with no path
+            get 10x the largest finite distance.
+    use_graph
+        If True (default), the kNN graph ``knn_adj`` is used in two ways:
+        (1) ``lambda_knn`` is added to the cost of every target that is
+        not a graph neighbour of the source, and (2) a source cell with no
+        graph neighbour in the target window gets zero velocity. Setting
+        ``lambda_knn=0`` removes (1) but not (2); ``use_graph=False``
+        removes both.
+    cost_scale
+        What the squared distances are divided by, which sets the meaning
+        of ``reg``.
+
+        ``"max"`` (default)
+            s = d2_max of the pair. ``reg`` is relative to the largest
+            squared distance, so the same ``reg`` gives a blurrier plan
+            the further apart the two windows are.
+        ``"nn"``
+            s = median squared distance from each source cell to its
+            nearest other source cell. ``reg`` is then in units of the
+            within-window spacing (effective temperature T_eff = reg),
+            independent of how far the target window is displaced.
+        ``"none"``
+            s = 1 (raw squared distances).
+        float
+            s = that value.
+    solver
+        ``"sinkhorn"`` (default): entropic OT. With ``cost_scale="max"``
+        it uses exactly the original call (``ot.sinkhorn``, 500
+        iterations). With any other scale it uses the log-domain solver,
+        which stays stable when ``reg`` is small relative to the cost
+        range. ``"emd"``: exact unregularised OT (``reg`` is ignored);
+        with equal window sizes the plan is a permutation. Not available
+        with ``unbalanced=True``.
+    graph_weights
+        Optional precomputed weighted graph from ``_graph_weights``
+        (``cost_metric="geodesic"`` only), so it is not rebuilt per pair.
+    assignment
+        ``"barycentric"`` (default): v_i = sum_j P_ij (x_j - x_i) / sum_j P_ij.
+        ``"argmax"``: v_i = x_j* - x_i with j* = argmax_j P_ij, the single
+        target receiving most of cell i's mass.
+    return_self_mass
+        If True, also return the fraction of transported mass that was
+        assigned to identical source/target pairs (computed before
+        masking). Used as a diagnostic. Ignored if ``return_info``.
+    return_info
+        If True, return ``(V, info)`` where ``info`` holds
+        ``self_mass``, ``T_eff`` (reg * s / nn-spacing; NaN for EMD),
+        ``n_eff`` (mean over source cells of 1 / sum_j w_ij^2, the
+        effective number of targets per cell), ``marginal_err`` (balanced
+        OT only: largest relative deviation of the plan's column sums from
+        1/n_target; a large value means Sinkhorn did not reach the
+        balanced solution, so the plan behaves like unbalanced OT),
+        ``row_mass`` (per source cell, fraction of its mass that was
+        transported; 1 for balanced OT, below 1 where unbalanced OT
+        destroys mass), ``typical_move`` (median cheapest move, in units
+        of the squared spacing inside the source window - the scale
+        ``reg_m`` is measured in), ``scale`` and ``delta2``.
     """
+    if solver not in ("sinkhorn", "emd"):
+        raise ValueError(f"solver must be 'sinkhorn' or 'emd', got {solver!r}")
+    if assignment not in ("barycentric", "argmax"):
+        raise ValueError(
+            f"assignment must be 'barycentric' or 'argmax', got {assignment!r}")
+    if solver == "emd" and unbalanced:
+        raise ValueError("solver='emd' is only available for balanced OT")
+    if cost_metric not in ("euclidean", "geodesic"):
+        raise ValueError("cost_metric must be 'euclidean' or 'geodesic', "
+                         f"got {cost_metric!r}")
+    if cost_metric == "geodesic" and knn_adj is None and graph_weights is None:
+        raise ValueError("cost_metric='geodesic' needs the kNN graph")
+
     X1 = X[idx_source]
     X2 = X[idx_target]
 
@@ -265,49 +762,175 @@ def _ot_velocity_pair(
     a = np.ones(n1, dtype=np.float64) / n1
     b = np.ones(n2, dtype=np.float64) / n2
 
-    # Cost matrix: squared Euclidean distance, normalized
-    C = pot.dist(X1, X2, metric="sqeuclidean")
+    # Geometric cost: squared distance, divided by the scale
+    Dss = None
+    if cost_metric == "geodesic":
+        W = graph_weights if graph_weights is not None \
+            else _graph_weights(X, knn_adj)
+        D = _geodesic_distances(W, idx_source) ** 2      # (n1, n_cells)
+        finite = np.isfinite(D)
+        D[~finite] = 10.0 * D[finite].max() if finite.any() else 1.0
+        C = D[:, idx_target].copy()
+        Dss = D[:, idx_source]
+        np.fill_diagonal(Dss, np.inf)
+    else:
+        C = pot.dist(X1, X2, metric="sqeuclidean")
     C_max = C.max()
-    if C_max > 0:
-        C = C / C_max
+    need_delta = return_info or cost_scale == "nn" or unbalanced
+    if not need_delta:
+        delta2 = np.nan
+    elif Dss is not None:
+        delta2 = float(np.median(Dss.min(axis=1))) if n1 > 1 \
+            else (C_max if C_max > 0 else 1.0)
+    else:
+        delta2 = _pair_nn_scale(X1, fallback=C_max if C_max > 0 else 1.0)
+
+    if cost_scale == "max":
+        scale = C_max if C_max > 0 else 1.0
+        if C_max > 0:
+            C = C / C_max
+    else:
+        if cost_scale == "nn":
+            scale = delta2
+        elif cost_scale == "none":
+            scale = 1.0
+        else:
+            scale = float(cost_scale)
+            if scale <= 0:
+                raise ValueError("a numeric cost_scale must be positive")
+        C = C / scale
+    # Penalty unit: the largest geometric cost in scaled units (1 for "max")
+    pen = (C_max / scale) if C_max > 0 else 1.0
+    # A typical forward move of this pair, in spacing units: small in an
+    # ordinary pair, large when the only targets are on another branch.
+    typical_move = (float(np.median(C.min(axis=1))) * scale / delta2
+                    if need_delta and delta2 > 0 and n1 > 0 and n2 > 0
+                    else float("nan"))
+    # Unit for the marginal relaxation: the spacing inside the source window
+    unit_m = (delta2 / scale) if (need_delta and delta2 > 0) else pen
 
     # Pseudotime penalty: penalize backward transport
     t1 = pseudotime[idx_source]
     t2 = pseudotime[idx_target]
     time_diff = t1[:, None] - t2[None, :]
-    C[time_diff > 0] += lambda_time
+    C[time_diff > 0] += lambda_time * pen
 
     # KNN locality penalty: penalize transport to non-neighbors
-    if knn_adj is not None:
+    local_adj = None
+    if use_graph and knn_adj is not None:
         local_adj = knn_adj[idx_source][:, idx_target]
         if hasattr(local_adj, "toarray"):
             local_adj = local_adj.toarray()
-        C[local_adj == 0] += lambda_knn
+        C[local_adj == 0] += lambda_knn * pen
 
-    # Sinkhorn OT
+    # Identical-cell pairs: only possible when windows overlap.
+    self_pairs = idx_source[:, None] == idx_target[None, :]
+    has_self = bool(self_pairs.any())
+    if mask_self and has_self:
+        # Large finite penalty rather than inf: keeps exp(-C/reg) at
+        # exactly 0 for these entries without producing NaNs.
+        C = C.copy()
+        C[self_pairs] += 1e3 * pen
+
+    def _fail():
+        V0 = np.zeros_like(X1)
+        if return_info:
+            return V0, dict(self_mass=float("nan"), T_eff=float("nan"),
+                            n_eff=float("nan"), marginal_err=float("nan"),
+                            row_mass=np.zeros(n1),
+                            typical_move=float("nan"), scale=scale,
+                            delta2=delta2)
+        if return_self_mass:
+            return V0, float("nan")
+        return V0
+
+    # Marginal relaxation, in units of a typical forward move
+    if np.ndim(reg_m) == 0:
+        reg_m_eff = reg_m * unit_m
+    else:
+        reg_m_eff = tuple(r * unit_m for r in reg_m)
+
+    # Solve
+    original_path = (solver == "sinkhorn" and cost_scale == "max")
     try:
-        P = pot.sinkhorn(a, b, C, reg=reg, numItermax=500, stopThr=1e-6)
+        if solver == "emd":
+            P = pot.emd(a, b, C, numItermax=1_000_000)
+        elif original_path:
+            if unbalanced:
+                P = pot.unbalanced.sinkhorn_unbalanced(
+                    a, b, C, reg=reg, reg_m=reg_m_eff,
+                    numItermax=500, stopThr=1e-6,
+                )
+            else:
+                P = pot.sinkhorn(a, b, C, reg=reg, numItermax=500,
+                                 stopThr=1e-6)
+        else:
+            if unbalanced:
+                P = _log_sinkhorn_unbalanced(a, b, C, reg, reg_m_eff)
+            else:
+                P = pot.sinkhorn(a, b, C, reg=reg, method="sinkhorn_log",
+                                 numItermax=2000, stopThr=1e-9)
     except Exception:
         # Fallback to exact OT if Sinkhorn diverges
         try:
             P = pot.emd(a, b, C)
         except Exception:
-            return np.zeros_like(X1)
+            return _fail()
 
-    # Check for numerical issues
-    if not np.isfinite(P).all() or P.sum() < 1e-10:
-        return np.zeros_like(X1)
+    # Check for numerical issues. Under unbalanced OT a (near) empty plan
+    # is a legitimate answer - every target was too expensive - so only the
+    # balanced problem treats it as a failure.
+    if not np.isfinite(P).all() or (P.sum() < 1e-10 and not unbalanced):
+        return _fail()
 
-    # Velocity = weighted displacement
-    row_sums = P.sum(axis=1, keepdims=True)
-    row_sums[row_sums == 0] = 1.0
-    V = (P @ X2) / row_sums - X1
+    self_mass = float("nan")
+    if has_self:
+        total = P.sum()
+        self_mass = float(P[self_pairs].sum() / total) if total > 0 else 0.0
+    else:
+        self_mass = 0.0
+
+    # Velocity from the plan. A source row that carries (numerically) no
+    # mass has no estimate: its velocity is set to 0, not to -x_i.
+    row_mass = P.sum(axis=1)
+    empty = row_mass <= 1e-12 * a
+    row_sums = row_mass[:, None].copy()
+    row_sums[empty] = 1.0
+    if assignment == "argmax":
+        j_star = np.argmax(P, axis=1)
+        V = X2[j_star] - X1
+        W = np.zeros_like(P)
+        W[np.arange(n1), j_star] = 1.0
+    else:
+        W = P / row_sums
+        V = W @ X2 - X1
+    V[empty] = 0.0
+    W[empty] = 0.0
 
     # Zero out velocity for cells with no KNN neighbors in target
-    if knn_adj is not None:
+    if local_adj is not None:
         has_neighbors = local_adj.sum(axis=1) > 0
         V[~has_neighbors] = 0.0
+        W[~has_neighbors] = 0.0
 
+    if return_info:
+        wsq = (W ** 2).sum(axis=1)
+        ok = wsq > 0
+        info = dict(
+            self_mass=self_mass,
+            T_eff=(float(reg * scale / delta2)
+                   if solver == "sinkhorn" and delta2 > 0 else float("nan")),
+            n_eff=float(np.mean(1.0 / wsq[ok])) if ok.any() else float("nan"),
+            marginal_err=(float(np.abs(P.sum(axis=0) - b).max() / b[0])
+                          if not unbalanced else float("nan")),
+            row_mass=row_mass / a,
+            typical_move=typical_move,
+            scale=float(scale),
+            delta2=float(delta2),
+        )
+        return V, info
+    if return_self_mass:
+        return V, self_mass
     return V
 
 
@@ -317,6 +940,14 @@ def compute_ot_velocity(
     reg: float = 0.05,
     lambda_time: float = 1.0,
     lambda_knn: float = 1.0,
+    unbalanced: bool = False,
+    reg_m: float = 1.0,
+    mask_self: bool = True,
+    use_graph: bool = True,
+    cost_metric: str = "euclidean",
+    cost_scale="max",
+    solver: str = "sinkhorn",
+    assignment: str = "barycentric",
 ) -> AnnData:
     """
     Compute raw OT velocity from spatial-temporal windows.
@@ -342,12 +973,32 @@ def compute_ot_velocity(
         Penalty added to cost for backward-in-time transport.
     lambda_knn
         Penalty added to cost for transport between non-neighbors.
+    unbalanced, reg_m, mask_self, use_graph, cost_metric, cost_scale,
+    solver, assignment
+        See :func:`_ot_velocity_pair`. The defaults reproduce the
+        original VelOT estimator exactly. In short:
+        ``use_graph=False`` drops both the kNN penalty and the zeroing
+        of cells with no graph neighbour in the target window;
+        ``cost_metric="geodesic"`` measures distances along the kNN graph
+        instead of straight through empty space;
+        ``reg_m="auto"`` sets the give-up threshold from the windows
+        themselves (ten times the ordinary move, i.e. the 75th percentile
+        of the per-cell cheapest moves, floored at one spacing), which
+        keeps ordinary transitions and drops only the dead ends;
+        ``cost_scale="nn"`` makes ``reg`` a temperature in units of the
+        within-window spacing; ``solver="emd"`` solves exact OT;
+        ``assignment="argmax"`` uses only the highest-mass target.
 
     Returns
     -------
     adata, modified in place with:
-      - ``adata.obsm['velot_velocity']`` : raw OT velocity (PCA space)
+      - ``adata.obsm['velot_velocity_raw_pca']`` : raw OT velocity
       - ``adata.obs['velot_confidence']`` : contribution count per cell
+      - ``adata.obs['velot_transported_mass']`` : fraction of each cell's
+        mass transported (1 for balanced OT)
+      - ``adata.uns['velot_raw_velocity_params']`` : settings plus
+        per-pair diagnostics averaged over pairs (``mean_T_eff``,
+        ``mean_n_eff``, ``mean_self_transport_mass``)
     """
     _check_fields(adata, obsm_keys=[basis], uns_keys=["velot_windows"])
 
@@ -367,38 +1018,354 @@ def compute_ot_velocity(
     # Accumulate velocity across all window pairs
     V = np.zeros((n_cells, dim), dtype=np.float64)
     counts = np.zeros(n_cells, dtype=np.float64)
+    mass = np.zeros(n_cells, dtype=np.float64)
+
+    graph_weights = None
+    if cost_metric == "geodesic":
+        if knn_adj is None:
+            raise ValueError(
+                "cost_metric='geodesic' needs adata.obsp['connectivities']")
+        graph_weights = _graph_weights(X, knn_adj)
+
+    # reg_m="auto": put the give-up threshold above ordinary moves but
+    # below the dead ends, from the geometry of the windows themselves.
+    if unbalanced and isinstance(reg_m, str):
+        if reg_m != "auto":
+            raise ValueError(f"reg_m must be a number, a pair, or 'auto', "
+                             f"got {reg_m!r}")
+        moves = np.concatenate([
+            _pair_cell_moves(X, np.asarray(s_), np.asarray(t_),
+                             cost_metric=cost_metric,
+                             graph_weights=graph_weights, knn_adj=knn_adj)
+            for s_, t_ in window_pairs]) if window_pairs else np.array([])
+        moves = moves[np.isfinite(moves)]
+        # Ordinary transport scale: the bulk of the cells, floored at one
+        # spacing (a cheapest move below the local spacing is not a cost
+        # worth relaxing). Ten times that keeps ordinary cells at ~90% of
+        # their mass while a dead end, which is orders of magnitude more
+        # expensive, keeps almost none.
+        ordinary = max(float(np.percentile(moves, 75)), 1.0) if moves.size else 1.0
+        reg_m = 10.0 * ordinary
+        print(f"  reg_m='auto' -> {reg_m:.3g}  (10x the ordinary move "
+              f"{ordinary:.3g}; p50/p90/max of the per-cell moves = "
+              f"{np.median(moves):.3g}/{np.percentile(moves, 90):.3g}/"
+              f"{moves.max():.3g}, in spacing units)")
+
+    self_mass_log = []
+    t_eff_log = []
+    n_eff_log = []
+    marg_log = []
+    move_log = []
 
     for pair_i, (idx_src, idx_tgt) in enumerate(window_pairs):
-        v_local = _ot_velocity_pair(
+        v_local, info = _ot_velocity_pair(
             X, idx_src, idx_tgt, pseudotime, knn_adj,
             reg=reg, lambda_time=lambda_time, lambda_knn=lambda_knn,
+            unbalanced=unbalanced, reg_m=reg_m, mask_self=mask_self,
+            use_graph=use_graph, cost_metric=cost_metric,
+            cost_scale=cost_scale, solver=solver, assignment=assignment,
+            graph_weights=graph_weights, return_info=True,
         )
+        self_mass = info["self_mass"]
+        if np.isfinite(self_mass):
+            self_mass_log.append(self_mass)
+        if np.isfinite(info["T_eff"]):
+            t_eff_log.append(info["T_eff"])
+        if np.isfinite(info["n_eff"]):
+            n_eff_log.append(info["n_eff"])
+        if np.isfinite(info["marginal_err"]):
+            marg_log.append(info["marginal_err"])
+        if np.isfinite(info["typical_move"]):
+            move_log.append(info["typical_move"])
 
         for i, cell_idx in enumerate(idx_src):
             V[cell_idx] += v_local[i]
             counts[cell_idx] += 1
+            mass[cell_idx] += info["row_mass"][i]
 
     # Average velocity across contributing windows
     mask = counts > 0
     V[mask] /= counts[mask, None]
+    mass[mask] /= counts[mask]
+
+    # Cells that actually carry a vector. A cell can be a source in some
+    # window and still end up at zero, because the kNN-graph rule blanks
+    # sources with no graph neighbour in the target window, so counting
+    # sources alone would overstate the coverage.
+    nonzero = np.linalg.norm(V, axis=1) > 0
 
     # Confidence: normalized contribution count
     max_count = counts.max() if counts.max() > 0 else 1.0
     confidence = counts / max_count
 
-    if basis == "X_pca":
-        adata.obsm["velot_velocity_raw_pca"] = V
-    elif basis == "X_umap":
-        adata.obsm["velot_velocity_raw_umap"] = V
-    else:
-        raise NotImplemented
+    adata.obsm[f"velot_velocity_raw_{_basis_suffix(adata, basis)}"] = V
+
+    adata.obs["velot_confidence"] = confidence
+    # Fraction of each cell's mass that was transported (1 for balanced
+    # OT; low values under unbalanced OT flag cells with nowhere to go,
+    # e.g. terminal states). NaN for cells that were never a source.
+    adata.obs["velot_transported_mass"] = np.where(mask, mass, np.nan)
+
+    adata.uns["velot_raw_velocity_params"] = {
+        "estimator": "ot",
+        "reg": reg,
+        "lambda_time": lambda_time,
+        "lambda_knn": lambda_knn,
+        "unbalanced": unbalanced,
+        "reg_m": reg_m if unbalanced else None,
+        "mask_self": mask_self,
+        "use_graph": use_graph,
+        "cost_metric": cost_metric,
+        "cost_scale": cost_scale,
+        "solver": solver,
+        "assignment": assignment,
+        "mean_self_transport_mass": (
+            float(np.mean(self_mass_log)) if self_mass_log else 0.0
+        ),
+        "mean_T_eff": float(np.mean(t_eff_log)) if t_eff_log else None,
+        "mean_n_eff": float(np.mean(n_eff_log)) if n_eff_log else None,
+        "max_marginal_err": float(np.max(marg_log)) if marg_log else None,
+        "typical_move_median": float(np.median(move_log)) if move_log else None,
+        "typical_move_max": float(np.max(move_log)) if move_log else None,
+        "typical_move_per_pair": np.asarray(move_log, dtype=float),
+        "coverage": float(nonzero.mean()),
+    }
+
+    n_with_velocity = int(nonzero.sum())
+    n_never_source = int((~mask).sum())
+    n_blanked = int((mask & ~nonzero).sum())
+    print(f"  OT velocity computed: {n_with_velocity} cells with velocity, "
+          f"{n_cells - n_with_velocity} without "
+          f"({n_never_source} never a source"
+          + (f", {n_blanked} blanked by the kNN-graph rule" if n_blanked else "")
+          + ") (will be filled by smoothing)")
+    if self_mass_log and max(self_mass_log) > 0:
+        print(f"  Mean transport mass on identical source/target pairs: "
+              f"{np.mean(self_mass_log):.4f}")
+    if t_eff_log or n_eff_log:
+        msg = "  Plan sharpness:"
+        if t_eff_log:
+            msg += f" mean T_eff = {np.mean(t_eff_log):.3g}"
+        if n_eff_log:
+            msg += f"{',' if t_eff_log else ''} mean targets per cell (n_eff) = {np.mean(n_eff_log):.3g}"
+        print(msg)
+    if move_log:
+        print(f"  Typical move per pair (spacing units, the unit of reg_m): "
+              f"median {np.median(move_log):.3g}, max {np.max(move_log):.3g}")
+    if marg_log and max(marg_log) > 0.05:
+        n_bad = int(np.sum(np.asarray(marg_log) > 0.05))
+        warnings.warn(
+            f"Sinkhorn did not reach the balanced plan in {n_bad}/"
+            f"{len(marg_log)} window pairs (max column-marginal error "
+            f"{max(marg_log):.0%}). Those plans behave like unbalanced OT. "
+            "Increase reg, or use solver='emd' or unbalanced=True "
+            "explicitly.", RuntimeWarning)
+        print(f"  WARNING: balanced marginals not reached in {n_bad}/"
+              f"{len(marg_log)} pairs (max error {max(marg_log):.0%})")
+
+    return adata
+
+
+# =====================================================================
+# 2b. PSEUDOTIME-GRADIENT VELOCITY (NO-OT CONTROL BASELINE)
+# =====================================================================
+
+
+def gradient_velocity(
+    adata: AnnData,
+    basis: str = "X_pca",
+    mode: str = "knn",
+    k: int = 30,
+    weighting: str = "uniform",
+    temperature: float = 0.1,
+    min_pseudotime_gap: float = 0.0,
+    use_windows_from_uns: bool = True,
+) -> AnnData:
+    """
+    Estimate a raw velocity field as a local pseudotime gradient, without
+    solving any optimal transport problem.
+
+    This is the transport-free control for the VelOT pipeline. It writes
+    exactly the same keys as :func:`compute_ot_velocity`, so it can be
+    swapped in underneath an otherwise identical neural smoothing and
+    projection stage. Any difference in the final field is then
+    attributable to the transport step alone.
+
+    Two modes are available, answering two different questions.
+
+    ``mode="knn"`` (default)
+        For each cell, the raw velocity is the (weighted) mean
+        displacement toward those of its ``k`` nearest neighbors that
+        have a larger pseudotime. No windows, no clusters, no coupling.
+        This is the minimal "smoothed pseudotime gradient" baseline: it
+        asks whether the OT machinery contributes anything beyond
+        pseudotime plus neural smoothing.
+
+    ``mode="window"``
+        Reuses the window pairs already built by
+        :func:`build_windows`, but replaces the Sinkhorn coupling with
+        the uniform coupling: each source cell's velocity is the
+        displacement toward the unweighted mean of the target window.
+        Spatial clustering, temporal windowing, and the aggregation over
+        overlapping windows are all held fixed, so the contrast against
+        :func:`compute_ot_velocity` isolates the transport plan itself.
+
+    Parameters
+    ----------
+    adata
+        Must contain ``adata.obsm[basis]`` and ``adata.obs['pseudotime']``.
+        For ``mode="window"`` it must also contain windows from
+        :func:`build_windows`.
+    basis
+        Embedding key in ``adata.obsm``.
+    mode
+        ``"knn"`` or ``"window"``.
+    k
+        Number of nearest neighbors (``mode="knn"`` only). Set this to
+        the same value used for the smoothing kNN so the two stages see
+        the same neighborhood scale.
+    weighting
+        ``"uniform"`` weights all forward neighbors equally.
+        ``"softmax"`` weights neighbor ``j`` by
+        ``exp((tau_j - tau_i) / temperature)``, giving more influence to
+        neighbors further ahead in pseudotime.
+    temperature
+        Softmax temperature (``weighting="softmax"`` only).
+    min_pseudotime_gap
+        Only neighbors with ``tau_j - tau_i > min_pseudotime_gap``
+        contribute. The default of 0 uses every strictly-forward
+        neighbor.
+    use_windows_from_uns
+        ``mode="window"`` only; kept for symmetry with
+        :func:`compute_ot_velocity`.
+
+    Returns
+    -------
+    adata, modified in place with the same keys as
+    :func:`compute_ot_velocity`:
+      - ``adata.obsm['velot_velocity_raw_pca']`` (or ``..._umap``)
+      - ``adata.obs['velot_confidence']``
+      - ``adata.uns['velot_raw_velocity_params']``
+
+    Example
+    -------
+    ::
+
+        velot.pp.prepare(adata, root_cluster="Ngn3 low EP")
+        velot.tl.velocity(adata, method="gradient")   # control
+        velot.tl.velocity(adata, method="ot")         # VelOT
+    """
+    if mode not in ("knn", "window"):
+        raise ValueError(f"mode must be 'knn' or 'window', got {mode!r}")
+    if weighting not in ("uniform", "softmax"):
+        raise ValueError(
+            f"weighting must be 'uniform' or 'softmax', got {weighting!r}"
+        )
+
+    _check_fields(adata, obsm_keys=[basis], obs_keys=["pseudotime"])
+
+    X = np.asarray(adata.obsm[basis], dtype=np.float64)
+    pseudotime = adata.obs["pseudotime"].values.astype(np.float64)
+    n_cells, dim = X.shape
+
+    V = np.zeros((n_cells, dim), dtype=np.float64)
+    counts = np.zeros(n_cells, dtype=np.float64)
+
+    if mode == "knn":
+        k_eff = int(min(k, max(1, n_cells - 1)))
+        knn_indices = _build_knn_index(X, k=k_eff)
+
+        for i in range(n_cells):
+            nbrs = knn_indices[i]
+            gaps = pseudotime[nbrs] - pseudotime[i]
+            forward = gaps > min_pseudotime_gap
+
+            n_forward = int(forward.sum())
+            if n_forward == 0:
+                continue
+
+            nbrs_f = nbrs[forward]
+            disp = X[nbrs_f] - X[i]
+
+            if weighting == "softmax":
+                g = gaps[forward]
+                w = np.exp((g - g.max()) / max(temperature, 1e-12))
+                w = w / w.sum()
+                V[i] = (w[:, None] * disp).sum(axis=0)
+            else:
+                V[i] = disp.mean(axis=0)
+
+            # Confidence: how much of the local neighborhood is
+            # forward in pseudotime. Plays the same role as the OT
+            # confidence, i.e. how well supported this estimate is.
+            counts[i] = n_forward
+
+        max_count = counts.max() if counts.max() > 0 else 1.0
+        confidence = counts / max_count
+
+    else:  # mode == "window"
+        _check_fields(adata, uns_keys=["velot_windows"])
+        window_pairs = adata.uns["velot_windows"]["pairs"]
+
+        knn_adj = adata.obsp["connectivities"] if "connectivities" in adata.obsp else None
+
+        for idx_src, idx_tgt in window_pairs:
+            idx_src = np.asarray(idx_src)
+            idx_tgt = np.asarray(idx_tgt)
+
+            # Uniform coupling: every source cell moves toward the
+            # unweighted barycenter of the target window. Exclude
+            # identical cells, mirroring mask_self in the OT path.
+            target_mean = X[idx_tgt].mean(axis=0)
+            v_local = target_mean[None, :] - X[idx_src]
+
+            overlap = np.isin(idx_src, idx_tgt)
+            if overlap.any():
+                n_tgt = len(idx_tgt)
+                if n_tgt > 1:
+                    sum_tgt = X[idx_tgt].sum(axis=0)
+                    for pos in np.where(overlap)[0]:
+                        cell = idx_src[pos]
+                        adj_mean = (sum_tgt - X[cell]) / (n_tgt - 1)
+                        v_local[pos] = adj_mean - X[cell]
+
+            if knn_adj is not None:
+                local_adj = knn_adj[idx_src][:, idx_tgt]
+                if hasattr(local_adj, "toarray"):
+                    local_adj = local_adj.toarray()
+                has_neighbors = np.asarray(local_adj).sum(axis=1) > 0
+                v_local[~has_neighbors] = 0.0
+
+            for i, cell_idx in enumerate(idx_src):
+                V[cell_idx] += v_local[i]
+                counts[cell_idx] += 1
+
+        max_count = counts.max() if counts.max() > 0 else 1.0
+        confidence = counts / max_count
+
+    mask = counts > 0
+    if mode == "window":
+        # Average over the windows in which each cell was a source,
+        # exactly as compute_ot_velocity does.
+        V[mask] /= counts[mask, None]
+
+    adata.obsm[f"velot_velocity_raw_{_basis_suffix(adata, basis)}"] = V
 
     adata.obs["velot_confidence"] = confidence
 
-    n_with_velocity = mask.sum()
-    n_zero = (~mask).sum()
-    print(f"  OT velocity computed: {n_with_velocity} cells with velocity, "
-          f"{n_zero} cells without (will be filled by smoothing)")
+    adata.uns["velot_raw_velocity_params"] = {
+        "estimator": f"gradient::{mode}",
+        "k": int(k) if mode == "knn" else None,
+        "weighting": weighting if mode == "knn" else "uniform",
+        "temperature": temperature if weighting == "softmax" else None,
+        "min_pseudotime_gap": min_pseudotime_gap,
+    }
+
+    n_with_velocity = int(mask.sum())
+    n_zero = int((~mask).sum())
+    print(f"  Gradient velocity ({mode}) computed: {n_with_velocity} cells "
+          f"with velocity, {n_zero} cells without "
+          f"(will be filled by smoothing)")
 
     return adata
 
@@ -470,6 +1437,7 @@ def smooth_velocity(
     lambda_divergence: float = 0.0,
     k_smooth: int = 15,
     use_pseudotime: bool = True,
+    normalize_raw: bool = False,
     random_state: int = 42,
     verbose: bool = True,
 ) -> AnnData:
@@ -547,6 +1515,16 @@ def smooth_velocity(
 
     X_np = adata.obsm[f"X_{basis}"].astype(np.float32)
     V_np = adata.obsm[velocity_key].astype(np.float32)
+    if normalize_raw:
+        # Fit direction only. The regression loss is an unweighted L2 on
+        # the raw vectors, so cells whose displacement happens to be long
+        # dominate the fit; scaling every target to unit length removes
+        # that weighting. The smoothed field then carries the magnitudes
+        # the network produces, not the window-to-window displacements.
+        nrm = np.linalg.norm(V_np, axis=1, keepdims=True)
+        keep = nrm[:, 0] > 0
+        V_np = V_np.copy()
+        V_np[keep] = V_np[keep] / nrm[keep]
     conf_np = adata.obs["velot_confidence"].values.astype(np.float32)
     pt_np = adata.obs["pseudotime"].values.astype(np.float32)
 
@@ -959,6 +1937,8 @@ def velocity(
     adata: AnnData,
     basis: str = "X_pca",
     smooth: bool = True,
+    # Raw velocity estimator
+    method: str = "ot",
     # Windowing params
     n_clusters: Optional[int] = None,
     window_size: Optional[int] = None,
@@ -971,6 +1951,19 @@ def velocity(
     reg: float = 0.05,
     lambda_time: float = 1.0,
     lambda_knn: float = 1.0,
+    unbalanced: bool = False,
+    reg_m: float = 1.0,
+    mask_self: bool = True,
+    use_graph: bool = True,
+    cost_metric: str = "euclidean",
+    cost_scale="max",
+    ot_solver: str = "sinkhorn",
+    ot_assignment: str = "barycentric",
+    # Gradient-baseline params (method="gradient")
+    gradient_mode: str = "knn",
+    gradient_k: int = 30,
+    gradient_weighting: str = "uniform",
+    gradient_temperature: float = 0.1,
     # Smoothing params
     n_epochs: int = 200,
     hidden_dim: int = 128,
@@ -979,6 +1972,7 @@ def velocity(
     lambda_divergence: float = 0.0,
     k_smooth: int = 15,
     use_pseudotime: bool = True,
+    normalize_raw: bool = False,
     # Output
     project_umap: bool = True,
     project_basis: str = "X_umap",
@@ -990,7 +1984,7 @@ def velocity(
 
     This is a convenience function that calls, in order:
       1. ``build_windows()`` — spatial-temporal windowing
-      2. ``compute_ot_velocity()`` — local OT velocity
+      2. ``compute_ot_velocity()`` or ``gradient_velocity()`` — raw field
       3. ``smooth_velocity()`` — neural smoothing (optional)
       4. ``project_to_umap()`` — PCA → UMAP projection (optional)
 
@@ -1002,6 +1996,29 @@ def velocity(
         Embedding key for velocity computation.
     smooth
         Whether to apply neural smoothing.
+    method
+        Estimator for the raw velocity field.
+
+        ``"ot"`` (default)
+            The VelOT estimator: entropy-regularized optimal transport
+            between consecutive pseudotime windows within each spatial
+            cluster.
+        ``"gradient"``
+            The transport-free control baseline
+            (:func:`gradient_velocity`). Everything downstream —
+            smoothing, projection, metrics — is identical, so comparing
+            the two isolates the contribution of the transport step.
+            See ``gradient_mode`` for the two available controls.
+
+    unbalanced, reg_m, mask_self, use_graph, cost_metric, cost_scale
+        Passed to :func:`compute_ot_velocity` (``method="ot"`` only).
+    ot_solver, ot_assignment
+        Passed to :func:`compute_ot_velocity` as ``solver`` and
+        ``assignment`` (``method="ot"`` only). All OT options default to
+        the original estimator.
+    gradient_mode, gradient_k, gradient_weighting, gradient_temperature
+        Passed to :func:`gradient_velocity` (``method="gradient"``
+        only) as ``mode``, ``k``, ``weighting`` and ``temperature``.
     project_umap
         Whether to project velocity to UMAP for visualization.
     verbose
@@ -1026,47 +2043,88 @@ def velocity(
     _check_fields(adata, obsm_keys=[basis], obs_keys=["pseudotime"])
 
     if verbose:
-        print("VelOT: Computing velocity field")
+        label = "VelOT" if method == "ot" else "VelOT (gradient control)"
+        print(f"{label}: Computing velocity field")
+        print(f"  Estimator: {method}"
+              + (f" / {gradient_mode}" if method == "gradient" else "")
+              + (" / unbalanced" if (method == "ot" and unbalanced) else "")
+              + (f" / {ot_solver}, {cost_metric} cost/{cost_scale}, {ot_assignment}"
+                 + ("" if use_graph else ", no kNN graph")
+                 if method == "ot" and (ot_solver != "sinkhorn"
+                                        or cost_metric != "euclidean"
+                                        or cost_scale != "max"
+                                        or ot_assignment != "barycentric"
+                                        or not use_graph) else ""))
         print(f"  Basis: {basis} ({adata.obsm[basis].shape[1]}D)")
         print(f"  Cells: {adata.n_obs}")
         print(f"  Smoothing: {'ON' if smooth else 'OFF'}")
         print()
 
-    # Step 1: Windowing
-    if verbose:
-        print("[1/4] Building spatial-temporal windows...")
-    build_windows(
-        adata,
-        basis=basis,
-        n_clusters=n_clusters,
-        window_size=window_size,
-        overlap_fraction=overlap_fraction,
-        min_window_size=min_window_size,
-        spatial_key=spatial_key,
-        tail_handling=tail_handling,
-        tail_threshold=tail_threshold,
-        random_state=random_state,
-    )
+    if method not in ("ot", "gradient"):
+        raise ValueError(f"method must be 'ot' or 'gradient', got {method!r}")
 
-    # Step 2: OT velocity
-    if verbose:
-        print("\n[2/4] Computing OT velocity...")
-    compute_ot_velocity(
-        adata,
-        basis=basis,
-        reg=reg,
-        lambda_time=lambda_time,
-        lambda_knn=lambda_knn,
-    )
+    needs_windows = (method == "ot") or (gradient_mode == "window")
+
+    # Step 1: Windowing
+    if needs_windows:
+        if verbose:
+            print("[1/4] Building spatial-temporal windows...")
+        build_windows(
+            adata,
+            basis=basis,
+            n_clusters=n_clusters,
+            window_size=window_size,
+            overlap_fraction=overlap_fraction,
+            min_window_size=min_window_size,
+            spatial_key=spatial_key,
+            tail_handling=tail_handling,
+            tail_threshold=tail_threshold,
+            random_state=random_state,
+        )
+    elif verbose:
+        print("[1/4] Windowing: SKIPPED (gradient_mode='knn')")
+
+    # Step 2: raw velocity field
+    if method == "ot":
+        if verbose:
+            print("\n[2/4] Computing OT velocity...")
+        compute_ot_velocity(
+            adata,
+            basis=basis,
+            reg=reg,
+            lambda_time=lambda_time,
+            lambda_knn=lambda_knn,
+            unbalanced=unbalanced,
+            reg_m=reg_m,
+            mask_self=mask_self,
+            use_graph=use_graph,
+            cost_metric=cost_metric,
+            cost_scale=cost_scale,
+            solver=ot_solver,
+            assignment=ot_assignment,
+        )
+    else:
+        if verbose:
+            print(f"\n[2/4] Computing gradient velocity "
+                  f"(control baseline, mode='{gradient_mode}')...")
+        gradient_velocity(
+            adata,
+            basis=basis,
+            mode=gradient_mode,
+            k=gradient_k,
+            weighting=gradient_weighting,
+            temperature=gradient_temperature,
+        )
 
     # Step 3: Smoothing
     if smooth:
         if verbose:
             print("\n[3/4] Smoothing velocity field...")
-        v_key = "velot_velocity_raw_pca" if basis == "X_pca" else "velot_velocity_raw_umap"
+        v_suffix = _basis_suffix(adata, basis)
+        v_key = f"velot_velocity_raw_{v_suffix}"
         smooth_velocity(
             adata,
-            basis=basis.split("X_")[1],
+            basis=v_suffix,
             velocity_key=v_key,
             n_epochs=n_epochs,
             hidden_dim=hidden_dim,
@@ -1075,6 +2133,7 @@ def velocity(
             lambda_divergence=lambda_divergence,
             k_smooth=k_smooth,
             use_pseudotime=use_pseudotime,
+            normalize_raw=normalize_raw,
             random_state=random_state,
             verbose=verbose,
         )
@@ -1083,13 +2142,18 @@ def velocity(
             print("\n[3/4] Smoothing: SKIPPED")
 
     # Step 4: Project to UMAP
-    if project_umap and project_basis in adata.obsm:
+    if project_umap and project_basis in adata.obsm and project_basis != basis:
         basis_name = project_basis.split("X_")[1]
+        src = _basis_suffix(adata, basis)
         if verbose:
             print("\n[4/4] Projecting to UMAP...")
-        project_to_umap(adata, "velot_velocity_raw_pca", f"velot_velocity_raw_{basis_name}", basis_umap=project_basis)
+        project_to_umap(adata, f"velot_velocity_raw_{src}",
+                        f"velot_velocity_raw_{basis_name}",
+                        basis_umap=project_basis)
         if smooth:
-            project_to_umap(adata, "velot_velocity_pca", f"velot_velocity_{basis_name}", basis_umap=project_basis)
+            project_to_umap(adata, f"velot_velocity_{src}",
+                            f"velot_velocity_{basis_name}",
+                            basis_umap=project_basis)
     else:
         if verbose:
             print("\n[4/4] UMAP projection: SKIPPED")
