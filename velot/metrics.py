@@ -370,3 +370,47 @@ def summary(
     if print_results:
         print("=" * 50)
     return results
+
+def cosine_to_truth(
+    adata: AnnData,
+    velocity_key: str,
+    truth_key: str = "true_velocity_pca",
+    cluster_key: str = "celltype",
+) -> dict:
+    """
+    Cosine of each cell's velocity to a known field.
+
+    Only defined for data where the true velocity is known - the
+    generated topologies, where it is analytic. Unlike ICCoh this is not
+    a smoothness term, and unlike CBDir it is not what the pseudotime
+    penalty imposes, so it is the one criterion that can say whether a
+    smoother field is also a more correct one.
+
+    Returns the same shape as :func:`summary`: per-cluster lists of
+    per-cell values under ``"cos"`` plus the aggregates, so the result
+    can be merged into a summary dict and handed to
+    ``velot.pl.metric_summary``.
+    """
+    V = np.asarray(adata.obsm[velocity_key])
+    truth = np.asarray(adata.obsm[truth_key])
+    labels = adata.obs[cluster_key].astype(str).values
+
+    na = np.linalg.norm(V, axis=1)
+    nb = np.linalg.norm(truth, axis=1)
+    ok = (na > 0) & (nb > 0)
+    cos = np.full(len(V), np.nan)
+    cos[ok] = (V[ok] * truth[ok]).sum(1) / (na[ok] * nb[ok])
+
+    per_cluster = {}
+    for c in np.unique(labels):
+        v = cos[labels == c]
+        per_cluster[str(c)] = v[~np.isnan(v)].tolist()
+
+    valid = cos[~np.isnan(cos)]
+    return {
+        "cos": per_cluster,
+        "cos_mean": float(np.mean(valid)) if len(valid) else float("nan"),
+        "cos_median": float(np.median(valid)) if len(valid) else float("nan"),
+        "cos_frac_pos": float(np.mean(valid > 0)) if len(valid) else float("nan"),
+        "cos_coverage": float(ok.mean()),
+    }
