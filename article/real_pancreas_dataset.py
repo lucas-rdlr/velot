@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 os.chdir(Path(__file__).resolve().parent)
 
-figures_path = "figures/figure 2"
+figures_path = "figures/figure2"
 show = False
 save = True
 basis = "pca"

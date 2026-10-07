@@ -38,7 +38,7 @@ matrices.
 > [https://doi.org/10.64898/2026.06.04.730132](https://doi.org/10.64898/2026.06.04.730132)
 
 <p align="center">
-  <img src="article/figures/figure 1/panel1.png" width="800">
+  <img src="article/figures/figure1/panel1.png" width="800">
 </p>
 
 ## Highlights
