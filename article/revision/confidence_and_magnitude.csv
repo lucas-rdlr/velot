@@ -1,0 +1,8 @@
+dataset,n_cells,coverage,conf_zero,conf_median,conf_p10,rho_norm_vs_sparsity_raw,rho_norm_vs_sparsity_smooth,true_norm_cv
+pancreas,2531,0.948,0.052,1.0,1.0,-0.391,-0.745,
+gen_tree,1050,0.928,0.048,1.0,1.0,0.671,0.625,0.0
+gen_bifurcation,1000,0.95,0.05,1.0,1.0,0.59,0.554,0.0
+erythroid,9815,0.968,0.032,1.0,1.0,0.639,0.431,
+hindbrain,13501,0.948,0.052,1.0,1.0,0.462,0.073,
+murine,3452,0.927,0.073,1.0,1.0,0.593,0.64,
+oligodendroglioma,4044,0.987,0.011,1.0,1.0,0.543,0.603,
