@@ -292,15 +292,16 @@ if __name__ == "__main__":
     import sys
     from pathlib import Path
 
-    PROJECT_DIR = Path("/home/user/Documents/velot_agusti/notebooks/agusti")
+    # PROJECT_DIR = Path("/home/user/Documents/velot_agusti/notebooks/agusti")
+    PROJECT_DIR = Path("/media/user/T7 Touch/PhD_Lucas/velot_peer_review/velot/notebooks/supplementary")
     sys.path.insert(0, str(PROJECT_DIR))
 
-    adata = sc.read_h5ad("results/vamp_robustness_pancreas/reference_pancreas_vampflow.h5ad")
+    adata = sc.read_h5ad("/media/user/T7 Touch/PhD_Lucas/velot_peer_review/velot/notebooks/vamp/results/vamp_robustness_pancreas2/reference_pancreas_vampflow.h5ad")
 
     run_analysis(
         adata,
         meta_state_key="velot_vampflow_state",
         cell_type_key="clusters",
         embedding_key="X_umap",
-        output_dir="metastate_celltype_comparison_pancreas",
+        output_dir="metastate_celltype_comparison_pancreas_revision",
     )

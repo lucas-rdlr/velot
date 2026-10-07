@@ -82,7 +82,10 @@ import scanpy as sc
 # 0. Project paths
 # =============================================================================
 
-PROJECT_DIR = Path("/home/user/Documents/velot_agusti")
+# PROJECT_DIR = Path("/home/user/Documents/velot_agusti")
+# ADATA_PATH = PROJECT_DIR / "pancreas_velot.h5ad"
+
+PROJECT_DIR = Path("/media/user/T7 Touch/PhD_Lucas/velot_peer_review/velot/notebooks/vamp")
 ADATA_PATH = PROJECT_DIR / "pancreas_velot.h5ad"
 
 RESULTS_DIR = PROJECT_DIR / "results" / "vamp_robustness_pancreas3"
@@ -169,7 +172,7 @@ class VAMPRobustnessConfig:
     directed_k: int = 30
 
     # Vector field
-    base_velot_velocity_weight: float = 0.50
+    base_velot_velocity_weight: float = 1
     flow_velot_alignment_weight: float = 0.15
 
     # Computation options
@@ -508,7 +511,7 @@ def main():
         velot_velocity_weight=ROBUST_CFG.base_velot_velocity_weight,
         graph_n_neighbors=ROBUST_CFG.n_neighbors_reference,
         rerun_metaflow=True,
-        reference_adata_for_graph_only=sc.read_h5ad("/home/user/Documents/velot_agusti/results/vamp_robustness_pancreas/reference_pancreas_vampflow.h5ad")
+        reference_adata_for_graph_only=sc.read_h5ad("/media/user/T7 Touch/PhD_Lucas/velot_peer_review/velot/notebooks/vamp/vamp_robustness_pancreas/reference_pancreas_vampflow.h5ad")
     )
 
     ref_adata = ref_result["adata"]

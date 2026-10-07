@@ -613,10 +613,10 @@ if __name__ == "__main__":
     import sys
     from pathlib import Path
 
-    PROJECT_DIR = Path("/home/user/Documents/velot_agusti/notebooks/agusti")
+    PROJECT_DIR = Path("/media/user/T7 Touch/PhD_Lucas/velot_peer_review/velot/notebooks/supplementary")
     sys.path.insert(0, str(PROJECT_DIR))
 
-    # replot_all("metastate_celltype_comparison_pancreas", dpi=300)
+    replot_all("metastate_celltype_comparison_pancreas_revision", dpi=300)
 
-    tables = load_analysis("metastate_celltype_comparison_pancreas")
-    plot_alluvial_metastate_to_celltype(tables, "metastate_celltype_comparison_pancreas", dpi=300)
+    # tables = load_analysis("metastate_celltype_comparison_pancreas_revision")
+    # plot_alluvial_metastate_to_celltype(tables, "metastate_celltype_comparison_pancreas_revision", dpi=300)
