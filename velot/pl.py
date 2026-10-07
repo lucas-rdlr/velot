@@ -848,7 +848,7 @@ def velocity_stream(
     if title is not None:
         ax.set_title(title, fontsize=18, fontfamily="sans serif")
     
-    add_umap_axis(ax)
+    add_umap_axis(ax, basis=basis)
     if owns_figure:
         _finish(fig, show=show, save=save, save_path=save_path)
         return fig if not show else None
@@ -867,6 +867,7 @@ def velocity_quiver(
     subsample: Optional[int] = None,
     arrow_color: str = "black",
     arrow_alpha: float = 0.7,
+    arrow_width: float = 0.002,
     normalize_arrows: bool = False,
     show: bool = True,
     save: bool = False,
@@ -909,6 +910,9 @@ def velocity_quiver(
         Color of the quiver arrows. Can be any matplotlib color.
     arrow_alpha
         Transparency of arrows (0–1).
+    arrow_width
+        Shaft width as a fraction of the axes width (matplotlib
+        ``units="width"``), so arrows look the same in any embedding.
     normalize_arrows
         If True, all arrows have the same length (unit vectors),
         showing direction only. Useful when velocity magnitudes vary
@@ -1024,7 +1028,8 @@ def velocity_quiver(
         angles="xy",
         scale_units="xy",
         scale=1,
-        width=0.002 * coord_range / 20,  # scale width to plot range
+        units="width",
+        width=arrow_width,
         headwidth=4,
         headlength=5,
         color=arrow_color,
@@ -1970,24 +1975,42 @@ def flow_simulation(
 
 
 def metric_summary(
-    metrics: dict,
+    metrics,
     orientation: str = "horizontal",
     layout: str = "row",
     figsize: Optional[tuple] = None,
     palette_name: str = "Set2",
     median_color: str = "black",
     frameon: bool = True,
+    group_colors: Optional[Sequence] = None,
+    legend: bool = True,
+    legend_loc: str = "best",
+    stats_loc: str = "auto",
+    stats_fontsize: int = 14,
+    ylim: Optional[tuple] = None,
     show: bool = True,
     save: bool = False,
     save_path: Optional[str] = None,
+    ax: Optional[Sequence] = None,
 ) -> plt.Figure:
     """
-    Box plots of ICCoh and CBDir metrics from a precomputed summary.
+    Box plots of the ICCoh and CBDir metrics.
 
     Parameters
     ----------
     metrics
-        Dictionary returned by ``velot.metrics.summary()``.
+        Either one dictionary returned by ``velot.metrics.summary()``, or
+        a mapping of label -> such a dictionary, in which case the panels
+        become grouped box plots with one box per label at every cluster
+        or edge. The usual use of the second form is comparing the raw
+        and the smoothed field of the same run::
+
+            velot.pl.metric_summary({"raw": res_raw, "smooth": res_smooth})
+
+        Grouping this way is what makes the smoother's contribution
+        readable: the two fields are scored on the same clusters and the
+        same edges, so the pair of boxes at each position is a like-for
+        -like comparison.
     orientation
         ``"horizontal"`` or ``"vertical"`` box plots.
     layout
@@ -1995,177 +2018,379 @@ def metric_summary(
     figsize
         Custom figure size.
     palette_name
-        Seaborn color palette name. First color for ICCoh,
-        second for CBDir.
+        Seaborn palette. With a single group the first colour is used for
+        ICCoh and the second for CBDir, as before. With several groups
+        the colour identifies the GROUP and is shared across panels, so
+        that the legend means something.
     median_color
-        Median line color.
+        Median line colour.
     frameon
         Show axes frame.
-    show
-        Display the figure.
-    save
-        File path to save.
+    group_colors
+        Explicit colours, one per group, overriding the palette.
+    legend
+        Draw the group legend (only drawn when there is more than one).
+    legend_loc
+        Where to put that legend; any matplotlib ``loc``.
+    stats_loc
+        Where the mean and median go. ``"inside"`` puts them in the
+        corner of the panel, bold, as in a single-group plot;
+        ``"title"`` puts them above it; ``None`` omits them. The default
+        ``"auto"`` uses the corner for one group and the title for
+        several, since with several the corner text tends to sit under
+        the legend - pass ``"inside"`` together with ``legend_loc`` to
+        put it back in the corner.
+    stats_fontsize
+        Font size of that annotation.
+    ylim
+        Limits of the score axis. The default spans the full [-1, 1]
+        range of both metrics, which is honest but leaves a publication
+        panel mostly empty when every score is high; pass e.g.
+        ``(0, 1.05)`` to crop it. Applies to the value axis whichever
+        orientation is used.
+    show, save, save_path
+        As elsewhere in ``velot.pl``.
+    ax
+        Two existing axes to draw into, in the order (ICCoh, CBDir).
+        When given, the figure is not saved or shown by this function.
 
     Returns
     -------
     matplotlib Figure.
     """
     import seaborn as sns
-    from matplotlib.colors import ListedColormap
 
-    if "iccoh" not in metrics:
-        raise ValueError(
-            "metrics dict must contain 'iccoh'. "
-            "Pass the output of velot.metrics.summary()."
-        )
-
-    palette = sns.color_palette(palette_name, 8)
-    color_iccoh = palette[0]
-    color_cbdir = palette[1]
-
-    iccoh = metrics["iccoh"]
-    sample_val = next(iter(iccoh.values()))
-    iccoh_is_raw = isinstance(sample_val, (list, np.ndarray))
-
-    has_cbdir = "cbdir" in metrics and len(metrics["cbdir"]) > 0
-    n_panels = 2 if has_cbdir else 1
-
-    if layout == "row":
-        nrows, ncols = 1, n_panels
-        default_figsize = (6 * n_panels, 5)
+    # ------------------------------------------------------------------
+    # one summary dict, or several to compare
+    # ------------------------------------------------------------------
+    if "iccoh" in metrics or "cos" in metrics:
+        groups = {None: metrics}
     else:
-        nrows, ncols = n_panels, 1
-        default_figsize = (7, 5 * n_panels)
+        groups = dict(metrics)
+        for label, m in groups.items():
+            if not any(k in m for k in ("iccoh", "cbdir", "cos")):
+                raise ValueError(
+                    f"entry {label!r} is not a velot.metrics.summary() "
+                    "dictionary: no 'iccoh', 'cbdir' or 'cos' key."
+                )
+    if not groups:
+        raise ValueError("no metrics to plot")
 
-    figsize = figsize or default_figsize
-    fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
-    if n_panels == 1:
-        axes = [axes]
-    elif isinstance(axes, np.ndarray):
-        axes = axes.flatten()
+    n_groups = len(groups)
+    grouped = n_groups > 1
+    palette = sns.color_palette(palette_name, max(8, n_groups))
+    if group_colors is not None:
+        colors = list(group_colors)
+    elif grouped:
+        colors = [palette[i] for i in range(n_groups)]
+    else:
+        colors = None                     # per-panel colours, as before
+
+    # Which panels to draw is decided by what the summaries contain, so a
+    # dataset with a known velocity field gets the cosine panel and one
+    # without simply does not.
+    PANELS = (("iccoh", "ICCoh score"),
+              ("cbdir", "CBDir score"),
+              ("cos", "cosine to true velocity"))
+    panels = [(k, lbl) for k, lbl in PANELS
+              if any(k in m and len(m[k]) > 0 for m in groups.values())]
+    if not panels:
+        raise ValueError("none of iccoh / cbdir / cos present in the metrics")
+    n_panels = len(panels)
+
+    # ------------------------------------------------------------------
+    # figure
+    # ------------------------------------------------------------------
+    if ax is not None:
+        axes = list(ax)
+        if len(axes) < n_panels:
+            raise ValueError(f"{n_panels} panels to draw but {len(axes)} "
+                             "axes were given")
+        fig = axes[0].figure
+    else:
+        if layout == "row":
+            nrows, ncols = 1, n_panels
+            default_figsize = (6 * n_panels, 5)
+        else:
+            nrows, ncols = n_panels, 1
+            default_figsize = (7, 5 * n_panels)
+        fig, axes = plt.subplots(nrows, ncols, figsize=figsize or default_figsize)
+        if n_panels == 1:
+            axes = [axes]
+        elif isinstance(axes, np.ndarray):
+            axes = axes.flatten()
+
+    if stats_loc not in ("auto", "inside", "title", None):
+        raise ValueError("stats_loc must be 'auto', 'inside', 'title' or None")
+    where = stats_loc
+    if where == "auto":
+        where = "title" if grouped else "inside"
 
     horiz = orientation == "horizontal"
-
     medianprops = dict(color=median_color, linewidth=2)
     whiskerprops = dict(color="black")
     capprops = dict(color="black")
-    meanprops = dict(
-        marker="o", markerfacecolor="white",
-        markeredgecolor="black", markersize=6,
-    )
+    meanprops = dict(marker="o", markerfacecolor="white",
+                     markeredgecolor="black", markersize=6)
 
-    def _draw_panel(ax, data_dict, labels_str, panel_color, title, mean_val, median_val, xlabel):
-        data_list = list(data_dict.values())
-        positions = list(range(len(labels_str)))
+    def _values(metric_dict, key):
+        """Per-cell lists keyed by cluster or edge; scalars are wrapped."""
+        d = metric_dict.get(key, {})
+        out = {}
+        for k, v in d.items():
+            out[k] = list(v) if isinstance(v, (list, np.ndarray)) else [v]
+        return out
 
-        boxprops = dict(facecolor=panel_color, edgecolor="black", alpha=0.6)
+    def _label_str(k):
+        if isinstance(k, tuple):
+            return f"{k[0]} →\n {k[1]}"
+        return str(k)
 
-        bp = ax.boxplot(
-            data_list,
-            positions=positions,
-            vert=not horiz,
-            patch_artist=True,
-            showmeans=True,
-            showfliers=False,
-            boxprops=boxprops,
-            medianprops=medianprops,
-            whiskerprops=whiskerprops,
-            capprops=capprops,
-            meanprops=meanprops,
-            widths=0.6,
-        )
+    def _draw_panel(axis, key, panel_color, axis_label):
+        # the union of positions, ordered by the first group that has them
+        order, seen = [], set()
+        for m in groups.values():
+            for k in _values(m, key):
+                if k not in seen:
+                    seen.add(k); order.append(k)
+        if key in ("iccoh", "cos"):          # cluster-keyed, not edge-keyed
+            order = sorted(order, key=str)
+        if not order:
+            axis.set_visible(False)
+            return
+
+        base = np.arange(len(order), dtype=float)
+        width = 0.8 / n_groups
+        handles = []
+        for j, (label, m) in enumerate(groups.items()):
+            vals = _values(m, key)
+            # centre the group's boxes on each position
+            offset = (j - (n_groups - 1) / 2) * width
+            data, pos = [], []
+            for p, k in zip(base, order):
+                v = vals.get(k, [])
+                if len(v):
+                    data.append(v); pos.append(p + offset)
+            if not data:
+                continue
+            face = colors[j] if grouped else panel_color
+            bp = axis.boxplot(
+                data, positions=pos, vert=not horiz, patch_artist=True,
+                showmeans=True, showfliers=False,
+                boxprops=dict(facecolor=face, edgecolor="black", alpha=0.6),
+                medianprops=medianprops, whiskerprops=whiskerprops,
+                capprops=capprops, meanprops=meanprops,
+                widths=width * 0.85,
+            )
+            if grouped:
+                handles.append((bp["boxes"][0], str(label)))
+
+        ticks = base
+        labels_str = [_label_str(k) for k in order]
+        parts = []
+        for label, m in groups.items():
+            mean_v = m.get(f"{key}_mean", np.nan)
+            med_v = m.get(f"{key}_median", np.nan)
+            prefix = f"{label}: " if grouped else ""
+            parts.append(f"{prefix}mean = {mean_v:.2f}   median = {med_v:.2f}")
+        # One group per line: a single line overruns the panel once
+        # there are three panels side by side.
+        note = "\n".join(parts) if where == "inside" else ""
+        if where == "title":
+            compact = [f"{lbl}  mean {m.get(f'{key}_mean', float('nan')):.2f}"
+                       f"   med {m.get(f'{key}_median', float('nan')):.2f}"
+                       for lbl, m in groups.items()]
+            axis.set_title("\n".join(compact), fontsize=11)
 
         if horiz:
-            ax.set_yticks(positions)
-            ax.set_yticklabels(labels_str, fontsize=12)
-            ax.set_xlim(-1.05, 1.05)
-            ax.set_xlabel(xlabel, fontsize=16)
-            ax.axvline(0, color="gray", linestyle="--", alpha=0.4, linewidth=0.8)
-            ax.text(
-                0.05, 0.95,
-                f"mean = {mean_val:.2f}\nmedian = {median_val:.2f}",
-                transform=ax.transAxes,
-                fontsize=14, fontweight="bold",
-                va="top", ha="left",
-            )
+            axis.set_yticks(ticks); axis.set_yticklabels(labels_str, fontsize=12)
+            axis.set_xlim(*(ylim or (-1.05, 1.05)))
+            axis.set_xlabel(axis_label, fontsize=16)
+            axis.axvline(0, color="gray", linestyle="--", alpha=0.4, linewidth=0.8)
+            if note:
+                axis.text(0.05, 0.95, note, transform=axis.transAxes,
+                          fontsize=stats_fontsize, fontweight="bold",
+                          va="top", ha="left")
         else:
-            ax.set_xticks(positions)
-            ax.set_xticklabels(labels_str, fontsize=12, rotation=45, ha="right")
-            ax.set_ylim(-1.05, 1.05)
-            ax.set_ylabel(xlabel, fontsize=16)
-            ax.axhline(0, color="gray", linestyle="--", alpha=0.4, linewidth=0.8)
-            ax.text(
-                0.05, 0.05,
-                f"mean = {mean_val:.2f}\nmedian = {median_val:.2f}",
-                transform=ax.transAxes,
-                fontsize=14, fontweight="bold",
-                va="bottom", ha="left",
-            )
+            axis.set_xticks(ticks)
+            axis.set_xticklabels(labels_str, fontsize=12, rotation=45, ha="right")
+            axis.set_ylim(*(ylim or (-1.05, 1.05)))
+            axis.set_ylabel(axis_label, fontsize=16)
+            axis.axhline(0, color="gray", linestyle="--", alpha=0.4, linewidth=0.8)
+            if note:
+                axis.text(0.05, 0.05, note, transform=axis.transAxes,
+                          fontsize=stats_fontsize, fontweight="bold",
+                          va="bottom", ha="left")
 
-        ax.set_title(title, fontsize=16) #, fontweight="bold")
+        if not frameon:
+            for spine in axis.spines.values():
+                spine.set_visible(False)
+        if grouped and legend and handles:
+            axis.legend([h for h, _ in handles], [t for _, t in handles],
+                        fontsize=11, loc=legend_loc, framealpha=0.8)
 
-    # ------------------------------------------------------------------
-    # Panel 1: ICCoh
-    # ------------------------------------------------------------------
-    iccoh_labels = sorted(iccoh.keys(), key=str)
-    if iccoh_is_raw:
-        iccoh_ordered = {k: iccoh[k] for k in iccoh_labels}
-    else:
-        iccoh_ordered = {k: [iccoh[k]] for k in iccoh_labels}
+    for i, (key, label) in enumerate(panels):
+        _draw_panel(axes[i], key, palette[i], label)
+    for extra_ax in axes[n_panels:]:
+        extra_ax.set_visible(False)
 
-    iccoh_labels_str = [str(k) for k in iccoh_labels]
-    iccoh_mean = metrics.get(
-        "iccoh_mean",
-        np.mean([np.mean(v) for v in iccoh_ordered.values() if len(v) > 0]),
-    )
-    iccoh_median = metrics.get(
-        "iccoh_median",
-        np.nan,
-    )
-
-    _draw_panel(
-        axes[0], iccoh_ordered, iccoh_labels_str,
-        color_iccoh, "",
-        iccoh_mean, iccoh_median, "ICCoh score",
-    )
-
-    # ------------------------------------------------------------------
-    # Panel 2: CBDir
-    # ------------------------------------------------------------------
-    if has_cbdir:
-        cbdir = metrics["cbdir"]
-        sample_cbdir_val = next(iter(cbdir.values()))
-        cbdir_is_raw = isinstance(sample_cbdir_val, (list, np.ndarray))
-
-        cbdir_labels = list(cbdir.keys())
-        if cbdir_is_raw:
-            cbdir_ordered = {k: cbdir[k] for k in cbdir_labels}
-        else:
-            cbdir_ordered = {k: [cbdir[k]] for k in cbdir_labels}
-
-        cbdir_labels_str = []
-        for k in cbdir_labels:
-            if isinstance(k, tuple):
-                cbdir_labels_str.append(f"{k[0]} →\n {k[1]}")
-            else:
-                cbdir_labels_str.append(str(k))
-
-        cbdir_mean = metrics.get(
-            "cbdir_mean",
-            np.mean([np.mean(v) for v in cbdir_ordered.values() if len(v) > 0]),
-        )
-        cbdir_median = metrics.get(
-            "cbdir_median",
-            np.nan,
-        )
-
-        _draw_panel(
-            axes[1], cbdir_ordered, cbdir_labels_str,
-            color_cbdir, "",
-            cbdir_mean, cbdir_median, "CBDir score",
-        )
-
-    # fig.suptitle("VelOT Velocity Metrics", fontsize=24, fontfamily="sans serif")
+    if ax is not None:
+        return fig
     plt.tight_layout()
+    _finish(fig, show=show, save=save, save_path=save_path)
+    return fig if not show else None
+
+
+_ZOOM_CORNERS = {
+    "upper right": (1.0, 1.0), "upper left": (0.0, 1.0),
+    "lower right": (1.0, 0.0), "lower left": (0.0, 0.0),
+    "upper center": (0.5, 1.0), "lower center": (0.5, 0.0),
+    "center left": (0.0, 0.5), "center right": (1.0, 0.5),
+    "center": (0.5, 0.5),
+}
+
+
+def zoom_inset(
+    plot_fn,
+    adata: AnnData,
+    center: tuple,
+    width: float,
+    height: float,
+    loc: str = "upper right",
+    size=0.38,
+    pad: float = 0.03,
+    edgecolor: str = "black",
+    linewidth: float = 1.4,
+    connect: bool = True,
+    clean: bool = True,
+    inset_kwargs: Optional[dict] = None,
+    figsize: tuple = (5, 5),
+    show: bool = True,
+    save: bool = False,
+    save_path: Optional[str] = None,
+    **kwargs,
+) -> plt.Figure:
+    """
+    Draw a plot with a magnified region of interest inset into it.
+
+    The region is where a claim is easiest to see and hardest to show at
+    full extent - a bifurcation, say, where the transport field and the
+    kNN gradient disagree but the difference is a few hundred cells wide
+    in a plot of several thousand.
+
+    Works with any ``velot.pl`` function that accepts ``adata``, ``ax``
+    and ``show``: the function is simply called twice, once over the full
+    data and once into the inset, and the inset is then limited to the
+    region. Drawing twice rather than copying artists is what lets this
+    work for stream plots and quivers alike.
+
+    Parameters
+    ----------
+    plot_fn
+        The plotting function, e.g. ``velot.pl.velocity_quiver``.
+    adata
+        Passed straight through to ``plot_fn``.
+    center
+        ``(x, y)`` centre of the region, in DATA coordinates of the
+        basis being plotted.
+    width, height
+        Size of the region, in the same data coordinates.
+    loc
+        Where the inset sits: ``"upper right"``, ``"lower left"``,
+        ``"center"`` and the rest of the matplotlib corner names, or an
+        explicit ``(x0, y0, w, h)`` in axes fractions for full control.
+    size
+        Inset size as a fraction of the axes, a float or ``(w, h)``.
+    pad
+        Gap between the inset and the axes edge, in axes fractions.
+    edgecolor, linewidth
+        Style of the region rectangle and of the inset frame.
+    connect
+        Draw the lines joining the rectangle to the inset.
+    clean
+        Strip the on-plot cluster labels and the basis arrows from the
+        inset, give it an opaque background and clip its contents. Those
+        annotations are placed for the full view and land wrongly, or
+        outside, in a magnified one. Set False to keep them.
+    inset_kwargs
+        Extra keyword arguments for the SECOND call only, to style the
+        magnified copy differently from the full one - a larger
+        ``subsample`` or wider arrows usually help.
+    **kwargs
+        Passed to both calls (``color``, ``basis``, ``velocity_key``...).
+
+    Returns
+    -------
+    matplotlib Figure.
+
+    Example
+    -------
+    ::
+
+        velot.pl.zoom_inset(
+            velot.pl.velocity_quiver, adata,
+            center=(2.0, 0.0), width=3.0, height=3.0,
+            loc="upper right", size=0.4,
+            color="celltype", basis="umap",
+            velocity_key="velot_velocity_umap",
+            inset_kwargs=dict(subsample=None),
+            save=True, save_path="zoom.png",
+        )
+    """
+    fig, ax = plt.subplots(figsize=figsize)
+    plot_fn(adata, ax=ax, show=False, **kwargs)
+
+    # where the inset goes, in axes fractions
+    if isinstance(loc, (tuple, list)) and len(loc) == 4:
+        rect = tuple(loc)
+    else:
+        if loc not in _ZOOM_CORNERS:
+            raise ValueError(f"loc must be one of {sorted(_ZOOM_CORNERS)} "
+                             "or an (x0, y0, w, h) tuple")
+        w, h = (size, size) if np.isscalar(size) else size
+        fx, fy = _ZOOM_CORNERS[loc]
+        x0 = pad + fx * (1.0 - w - 2 * pad)
+        y0 = pad + fy * (1.0 - h - 2 * pad)
+        rect = (x0, y0, w, h)
+
+    axins = ax.inset_axes(rect)
+    axins.set_zorder(5)
+    plot_fn(adata, ax=axins, show=False, **{**kwargs, **(inset_kwargs or {})})
+
+    cx, cy = center
+    axins.set_xlim(cx - width / 2.0, cx + width / 2.0)
+    axins.set_ylim(cy - height / 2.0, cy + height / 2.0)
+    axins.set_xlabel(""); axins.set_ylabel(""); axins.set_title("")
+    axins.set_xticks([]); axins.set_yticks([])
+    if axins.get_legend() is not None:
+        axins.get_legend().remove()
+
+    if clean:
+        # On-plot cluster labels sit at cluster centroids and the basis
+        # arrows are drawn in axes fractions; inside a zoom both land in
+        # the wrong place, and scvelo draws them with clip_on=False so
+        # they escape the inset entirely. Drop them and make the inset
+        # opaque so it reads as a panel rather than an overlay.
+        for artist in list(axins.texts):
+            artist.remove()
+        axins.set_facecolor("white")
+        axins.patch.set_alpha(1.0)
+        for coll in axins.collections:
+            coll.set_clip_on(True)
+        for line in axins.lines:
+            line.set_clip_on(True)
+        for patch in axins.patches:
+            patch.set_clip_on(True)
+
+    axins.set_frame_on(True)        # the plot functions switch it off
+    for spine in axins.spines.values():
+        spine.set_visible(True)
+        spine.set_edgecolor(edgecolor)
+        spine.set_linewidth(linewidth)
+
+    # the rectangle on the main axes, and the lines joining the two
+    ax.indicate_inset_zoom(axins, edgecolor=edgecolor, linewidth=linewidth,
+                           alpha=1.0 if connect else 0.0)
+
     _finish(fig, show=show, save=save, save_path=save_path)
     return fig if not show else None

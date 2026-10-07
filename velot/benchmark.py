@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 import json
 import time
+import warnings
 from datetime import datetime
 from typing import Optional, Dict, List, Any
 
@@ -79,6 +80,7 @@ def save_benchmark(
     dataset_name: str,
     output_dir: str = "benchmark_results",
     extra_info: Optional[Dict] = None,
+    save_adata: bool = True,
 ) -> str:
     """
     Save benchmark results for one (model, dataset) run.
@@ -97,6 +99,10 @@ def save_benchmark(
         Directory to save results.
     extra_info
         Any additional metadata.
+    save_adata
+        Also write the AnnData next to the JSON. Turn this off for seed
+        or parameter sweeps, where the objects are large and identical
+        except for the field itself.
 
     Returns
     -------
@@ -105,21 +111,45 @@ def save_benchmark(
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(os.path.join(output_dir, "data"), exist_ok=True)
 
-    record = {
+    record = _to_serializable({
         "model": model_name,
         "dataset": dataset_name,
         "timestamp": datetime.now().isoformat(),
         "timing": timer.summary(),
         "extra": extra_info or {},
-        "metrics": _to_serializable(results),
-    }
+        "metrics": results,
+    })
 
     filename = f"{model_name}_{dataset_name}"
     filepath = os.path.join(output_dir, f"{filename}.json")
-    with open(filepath, "w") as f:
-        json.dump(record, f, indent=2)
-    
-    adata.write(os.path.join(output_dir, "data", f"{filename}.h5ad"))
+    # Serialise first, then write in one go and rename into place: a
+    # failure here can never leave a half-written JSON behind.
+    payload = json.dumps(record, indent=2)
+    tmp = filepath + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(payload)
+    os.replace(tmp, filepath)
+
+    if save_adata:
+        if ('velot_smoothing' in adata.uns
+                and 'network' in adata.uns['velot_smoothing']):
+            del adata.uns['velot_smoothing']['network']
+        h5 = os.path.join(output_dir, "data", f"{filename}.h5ad")
+        try:
+            adata.write(h5)
+        except (ValueError, TypeError) as err:
+            # Window pairs are ragged whenever the windows are not all
+            # the same length, and h5ad cannot store that. They are
+            # rebuildable from the pseudotime and the window size, so
+            # drop them rather than lose the whole object.
+            pairs = adata.uns.get("velot_windows", {}).pop("pairs", None)
+            if pairs is None:
+                raise
+            warnings.warn(
+                f"could not write {filename}.h5ad with the window pairs "
+                f"({err}); saved without them - rebuild with "
+                "tl.build_windows.", RuntimeWarning, stacklevel=2)
+            adata.write(h5)
 
     print(f"  Saved: {filepath}")
     return filepath
@@ -338,7 +368,15 @@ def _to_serializable(obj):
         return obj.tolist()
     elif isinstance(obj, (np.bool_,)):
         return bool(obj)
-    return obj
+    elif isinstance(obj, (str, int, float, bool)) or obj is None:
+        return obj
+    elif hasattr(obj, "item"):          # any remaining 0-d numpy scalar
+        return obj.item()
+    # Last resort: keep the run alive, but say so - a value that lands
+    # here is stored as text and will not aggregate as a number.
+    warnings.warn(f"benchmark record: storing {type(obj).__name__} as a "
+                  f"string ({obj!r:.60})", RuntimeWarning, stacklevel=2)
+    return str(obj)
 
 
 def _key_to_str(key):
@@ -956,8 +994,10 @@ def benchmark_comparison_individual(
         all_models = df_summary["model"].unique()
     n_models = len(all_models)
 
-    cmap = plt.get_cmap("Set2")
-    colors = [cmap(0), cmap(1), cmap(2), cmap(3), cmap(5)]
+    # cmap = plt.get_cmap("Set2")
+    # colors = [cmap(0), cmap(1), cmap(2), cmap(3), cmap(5)]
+    cmap = plt.get_cmap("tab20")
+    colors = [cmap(i) for i in range(n_models)]
     model_colors = dict(zip(all_models, colors))
 
     label_idx = 0
@@ -2295,7 +2335,7 @@ def benchmark_dotplot(
             ax.scatter(
                 cx, row, s=dot_size,
                 color=gcolor, #color="gold" if is_best else gcolor,
-                alpha=1 if is_best else 0.75,
+                alpha=1 if is_best else 0.5,
                 edgecolor="black",
                 linewidth=1.0,
                 zorder=4 if is_best else 3,
@@ -2394,13 +2434,13 @@ def benchmark_dotplot(
             else "Overall"
             for c in cols
         ],
-        rotation=40, fontsize=9.5, ha="right",
+        rotation=40, fontsize=12, ha="right",
     )
 
     ax.set_yticks(range(n_models))
     ax.set_yticklabels(
         [model_labels.get(m, m) for m in models_sorted],
-        fontsize=11, fontweight="bold",
+        fontsize=12, fontweight="bold",
     )
     ax.invert_yaxis()
 
