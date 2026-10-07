@@ -1,0 +1,529 @@
+log: ../article_figures/figure5/results_synthetic/run_all_20261005_140501.log
+datasets: linear bifurcation trifurcation
+methods:  velot velot_gradient
+seeds:    0
+
+=== linear / velot / seed 0
+VelOT: Computing velocity field
+  Estimator: ot / emd, euclidean cost/max, barycentric, no kNN graph
+  Basis: X_pca (30D)
+  Cells: 5000
+  Smoothing: ON
+
+[1/4] Building spatial-temporal windows...
+  Spatial clustering: 1 clusters via KMeans on X_pca (30D)
+  Built 49 window pairs across 1 clusters (skipped 0 small clusters)
+  Window size: 100, step: 100
+
+[2/4] Computing OT velocity...
+  OT velocity computed: 4900 cells with velocity, 100 without (100 never a source) (will be filled by smoothing)
+  Plan sharpness: mean targets per cell (n_eff) = 1
+  Typical move per pair (spacing units, the unit of reg_m): median 1.1, max 1.35
+
+[3/4] Smoothing velocity field...
+Found torch compatible version. Running on cuda device
+    epoch 50/100: total=1.0454 reg=4.6573 smooth=0.0007 curl=0.0001
+    epoch 100/100: total=1.0333 reg=4.6766 smooth=0.0005 curl=0.0003
+  Smoothing complete: final total=1.0333
+
+[4/4] Projecting to UMAP...
+  Velocity projected to UMAP (5000 cells)
+  Velocity projected to UMAP (5000 cells)
+
+VelOT: Done.
+==================================================
+VelOT Velocity Metrics
+==================================================
+
+Inner-Cluster Coherence (mean: 0.124):
+                          A: 0.133
+                          B: 0.144
+                          C: 0.095
+
+Inner-Cluster Coherence (median: 0.135):
+                          A: 0.135
+                          B: 0.139
+                          C: 0.081
+
+Cross-Boundary Correctness (mean: 0.956):
+                A → B              : 0.951
+                B → C              : 0.961
+==================================================
+==================================================
+VelOT Velocity Metrics
+==================================================
+
+Inner-Cluster Coherence (mean: 0.869):
+                          A: 0.906
+                          B: 0.830
+                          C: 0.871
+
+Inner-Cluster Coherence (median: 0.868):
+                          A: 0.930
+                          B: 0.825
+                          C: 0.868
+
+Cross-Boundary Correctness (mean: 0.959):
+                A → B              : 0.993
+                B → C              : 0.925
+==================================================
+BenchmarkTimer(
+  load: 0.11s
+  preprocess: 0.32s
+  velocity: 4.19s
+  evaluate: 4.99s
+  total: 9.73s
+)
+  Saved: ../article_figures/figure5/results_synthetic/velot_seed0_raw_linear.json
+  Saved: ../article_figures/figure5/results_synthetic/velot_seed0_smooth_linear.json
+=== linear / velot_gradient / seed 0
+  reusing ../article_figures/figure5/results_synthetic/cache/v2__linear__A__distal.h5ad
+VelOT (gradient control): Computing velocity field
+  Estimator: gradient / knn
+  Basis: X_pca (30D)
+  Cells: 5000
+  Smoothing: ON
+
+[1/4] Windowing: SKIPPED (gradient_mode='knn')
+
+[2/4] Computing gradient velocity (control baseline, mode='knn')...
+  Gradient velocity (knn) computed: 4944 cells with velocity, 56 cells without (will be filled by smoothing)
+
+[3/4] Smoothing velocity field...
+Found torch compatible version. Running on cuda device
+    epoch 50/100: total=1.0219 reg=1.7365 smooth=0.0016 curl=0.0001
+    epoch 100/100: total=1.0290 reg=1.7621 smooth=0.0016 curl=0.0001
+  Smoothing complete: final total=1.0290
+
+[4/4] Projecting to UMAP...
+  Velocity projected to UMAP (5000 cells)
+  Velocity projected to UMAP (5000 cells)
+
+VelOT: Done.
+==================================================
+VelOT Velocity Metrics
+==================================================
+
+Inner-Cluster Coherence (mean: 0.291):
+                          A: 0.304
+                          B: 0.300
+                          C: 0.267
+
+Inner-Cluster Coherence (median: 0.301):
+                          A: 0.315
+                          B: 0.301
+                          C: 0.277
+
+Cross-Boundary Correctness (mean: 0.994):
+                A → B              : 0.999
+                B → C              : 0.988
+==================================================
+==================================================
+VelOT Velocity Metrics
+==================================================
+
+Inner-Cluster Coherence (mean: 0.676):
+                          A: 0.775
+                          B: 0.628
+                          C: 0.625
+
+Inner-Cluster Coherence (median: 0.631):
+                          A: 0.779
+                          B: 0.631
+                          C: 0.626
+
+Cross-Boundary Correctness (mean: 0.993):
+                A → B              : 0.995
+                B → C              : 0.992
+==================================================
+BenchmarkTimer(
+  load: 0.09s
+  velocity: 4.51s
+  evaluate: 5.06s
+  total: 9.65s
+)
+  Saved: ../article_figures/figure5/results_synthetic/velot_gradient_seed0_raw_linear.json
+  Saved: ../article_figures/figure5/results_synthetic/velot_gradient_seed0_smooth_linear.json
+=== bifurcation / velot / seed 0
+VelOT: Computing velocity field
+  Estimator: ot / emd, euclidean cost/max, barycentric, no kNN graph
+  Basis: X_pca (30D)
+  Cells: 5000
+  Smoothing: ON
+
+[1/4] Building spatial-temporal windows...
+  Spatial clustering: 1 clusters via KMeans on X_pca (30D)
+  Built 24 window pairs across 1 clusters (skipped 0 small clusters)
+  Window size: 200, step: 200
+
+[2/4] Computing OT velocity...
+  OT velocity computed: 4800 cells with velocity, 200 without (200 never a source) (will be filled by smoothing)
+  Plan sharpness: mean targets per cell (n_eff) = 1
+  Typical move per pair (spacing units, the unit of reg_m): median 1.12, max 1.85
+
+[3/4] Smoothing velocity field...
+Found torch compatible version. Running on cuda device
+    epoch 50/100: total=0.9871 reg=7.2135 smooth=0.0010 curl=0.0002
+    epoch 100/100: total=0.9336 reg=6.9898 smooth=0.0007 curl=0.0002
+  Smoothing complete: final total=0.9336
+
+[4/4] Projecting to UMAP...
+  Velocity projected to UMAP (5000 cells)
+  Velocity projected to UMAP (5000 cells)
+
+VelOT: Done.
+==================================================
+VelOT Velocity Metrics
+==================================================
+
+Inner-Cluster Coherence (mean: 0.185):
+                          A: 0.356
+                          B: 0.158
+                          C: 0.211
+                          D: 0.091
+                          E: 0.110
+
+Inner-Cluster Coherence (median: 0.164):
+                          A: 0.362
+                          B: 0.164
+                          C: 0.186
+                          D: 0.075
+                          E: 0.085
+
+Cross-Boundary Correctness (mean: 0.886):
+                A → B              : 0.945
+                A → C              : 0.940
+                B → D              : 0.851
+                C → E              : 0.809
+==================================================
+==================================================
+VelOT Velocity Metrics
+==================================================
+
+Inner-Cluster Coherence (mean: 0.949):
+                          A: 0.975
+                          B: 0.921
+                          C: 0.918
+                          D: 0.959
+                          E: 0.972
+
+Inner-Cluster Coherence (median: 0.962):
+                          A: 0.986
+                          B: 0.922
+                          C: 0.923
+                          D: 0.962
+                          E: 0.978
+
+Cross-Boundary Correctness (mean: 0.937):
+                A → B              : 0.964
+                A → C              : 0.959
+                B → D              : 0.931
+                C → E              : 0.895
+==================================================
+BenchmarkTimer(
+  load: 0.14s
+  preprocess: 0.30s
+  velocity: 4.19s
+  evaluate: 5.02s
+  total: 9.79s
+)
+  Saved: ../article_figures/figure5/results_synthetic/velot_seed0_raw_bifurcation.json
+  Saved: ../article_figures/figure5/results_synthetic/velot_seed0_smooth_bifurcation.json
+=== bifurcation / velot_gradient / seed 0
+  reusing ../article_figures/figure5/results_synthetic/cache/v2__bifurcation__A__distal.h5ad
+VelOT (gradient control): Computing velocity field
+  Estimator: gradient / knn
+  Basis: X_pca (30D)
+  Cells: 5000
+  Smoothing: ON
+
+[1/4] Windowing: SKIPPED (gradient_mode='knn')
+
+[2/4] Computing gradient velocity (control baseline, mode='knn')...
+  Gradient velocity (knn) computed: 4936 cells with velocity, 64 cells without (will be filled by smoothing)
+
+[3/4] Smoothing velocity field...
+Found torch compatible version. Running on cuda device
+    epoch 50/100: total=1.1629 reg=1.9423 smooth=0.0015 curl=0.0000
+    epoch 100/100: total=1.1643 reg=1.9585 smooth=0.0014 curl=0.0000
+  Smoothing complete: final total=1.1643
+
+[4/4] Projecting to UMAP...
+  Velocity projected to UMAP (5000 cells)
+  Velocity projected to UMAP (5000 cells)
+
+VelOT: Done.
+==================================================
+VelOT Velocity Metrics
+==================================================
+
+Inner-Cluster Coherence (mean: 0.287):
+                          A: 0.320
+                          B: 0.287
+                          C: 0.313
+                          D: 0.244
+                          E: 0.270
+
+Inner-Cluster Coherence (median: 0.287):
+                          A: 0.329
+                          B: 0.287
+                          C: 0.315
+                          D: 0.251
+                          E: 0.277
+
+Cross-Boundary Correctness (mean: 0.994):
+                A → B              : 0.992
+                A → C              : 0.998
+                B → D              : 0.984
+                C → E              : 0.999
+==================================================
+==================================================
+VelOT Velocity Metrics
+==================================================
+
+Inner-Cluster Coherence (mean: 0.708):
+                          A: 0.817
+                          B: 0.666
+                          C: 0.695
+                          D: 0.682
+                          E: 0.677
+
+Inner-Cluster Coherence (median: 0.701):
+                          A: 0.823
+                          B: 0.662
+                          C: 0.701
+                          D: 0.719
+                          E: 0.682
+
+Cross-Boundary Correctness (mean: 0.993):
+                A → B              : 0.995
+                A → C              : 0.991
+                B → D              : 0.991
+                C → E              : 0.993
+==================================================
+BenchmarkTimer(
+  load: 0.09s
+  velocity: 4.35s
+  evaluate: 5.16s
+  total: 9.60s
+)
+  Saved: ../article_figures/figure5/results_synthetic/velot_gradient_seed0_raw_bifurcation.json
+  Saved: ../article_figures/figure5/results_synthetic/velot_gradient_seed0_smooth_bifurcation.json
+=== trifurcation / velot / seed 0
+VelOT: Computing velocity field
+  Estimator: ot / emd, euclidean cost/max, barycentric, no kNN graph
+  Basis: X_pca (20D)
+  Cells: 5000
+  Smoothing: ON
+
+[1/4] Building spatial-temporal windows...
+  Spatial clustering: 1 clusters via KMeans on X_pca (20D)
+  Built 24 window pairs across 1 clusters (skipped 0 small clusters)
+  Window size: 200, step: 200
+
+[2/4] Computing OT velocity...
+  OT velocity computed: 4800 cells with velocity, 200 without (200 never a source) (will be filled by smoothing)
+  Plan sharpness: mean targets per cell (n_eff) = 1
+  Typical move per pair (spacing units, the unit of reg_m): median 1.22, max 1.83
+
+[3/4] Smoothing velocity field...
+Found torch compatible version. Running on cuda device
+    epoch 50/100: total=1.1572 reg=8.9207 smooth=0.0029 curl=0.0004
+    epoch 100/100: total=1.0536 reg=8.3285 smooth=0.0021 curl=0.0004
+  Smoothing complete: final total=1.0536
+
+[4/4] Projecting to UMAP...
+  Velocity projected to UMAP (5000 cells)
+  Velocity projected to UMAP (5000 cells)
+
+VelOT: Done.
+==================================================
+VelOT Velocity Metrics
+==================================================
+
+Inner-Cluster Coherence (mean: 0.233):
+                          A: 0.499
+                          B: 0.343
+                          C: 0.124
+                          D: 0.269
+                          E: 0.157
+                          F: 0.092
+                          G: 0.207
+                          H: 0.175
+
+Inner-Cluster Coherence (median: 0.167):
+                          A: 0.505
+                          B: 0.343
+                          C: 0.122
+                          D: 0.293
+                          E: 0.162
+                          F: 0.040
+                          G: 0.173
+                          H: 0.132
+
+Cross-Boundary Correctness (mean: 0.877):
+                A → B              : 0.917
+                B → C              : 0.881
+                C → F              : 0.794
+                B → D              : 0.890
+                D → G              : 0.892
+                E → H              : 0.887
+==================================================
+==================================================
+VelOT Velocity Metrics
+==================================================
+
+Inner-Cluster Coherence (mean: 0.943):
+                          A: 0.985
+                          B: 0.942
+                          C: 0.906
+                          D: 0.868
+                          E: 0.897
+                          F: 0.968
+                          G: 0.986
+                          H: 0.990
+
+Inner-Cluster Coherence (median: 0.958):
+                          A: 0.987
+                          B: 0.946
+                          C: 0.906
+                          D: 0.869
+                          E: 0.899
+                          F: 0.971
+                          G: 0.991
+                          H: 0.996
+
+Cross-Boundary Correctness (mean: 0.803):
+                A → B              : 0.897
+                B → C              : 0.899
+                C → F              : 0.922
+                B → D              : 0.951
+                D → G              : 0.588
+                E → H              : 0.559
+==================================================
+BenchmarkTimer(
+  load: 0.14s
+  preprocess: 0.20s
+  velocity: 3.69s
+  evaluate: 5.76s
+  total: 9.95s
+)
+  Saved: ../article_figures/figure5/results_synthetic/velot_seed0_raw_trifurcation.json
+  Saved: ../article_figures/figure5/results_synthetic/velot_seed0_smooth_trifurcation.json
+=== trifurcation / velot_gradient / seed 0
+  reusing ../article_figures/figure5/results_synthetic/cache/v2__trifurcation__A__distal.h5ad
+VelOT (gradient control): Computing velocity field
+  Estimator: gradient / knn
+  Basis: X_pca (20D)
+  Cells: 5000
+  Smoothing: ON
+
+[1/4] Windowing: SKIPPED (gradient_mode='knn')
+
+[2/4] Computing gradient velocity (control baseline, mode='knn')...
+  Gradient velocity (knn) computed: 4942 cells with velocity, 58 cells without (will be filled by smoothing)
+
+[3/4] Smoothing velocity field...
+Found torch compatible version. Running on cuda device
+    epoch 50/100: total=1.1083 reg=1.2851 smooth=0.0046 curl=0.0000
+    epoch 100/100: total=1.0344 reg=1.1906 smooth=0.0046 curl=0.0000
+  Smoothing complete: final total=1.0344
+
+[4/4] Projecting to UMAP...
+  Velocity projected to UMAP (5000 cells)
+  Velocity projected to UMAP (5000 cells)
+
+VelOT: Done.
+==================================================
+VelOT Velocity Metrics
+==================================================
+
+Inner-Cluster Coherence (mean: 0.360):
+                          A: 0.408
+                          B: 0.429
+                          C: 0.369
+                          D: 0.380
+                          E: 0.374
+                          F: 0.297
+                          G: 0.311
+                          H: 0.313
+
+Inner-Cluster Coherence (median: 0.375):
+                          A: 0.422
+                          B: 0.437
+                          C: 0.371
+                          D: 0.384
+                          E: 0.380
+                          F: 0.301
+                          G: 0.314
+                          H: 0.319
+
+Cross-Boundary Correctness (mean: 0.967):
+                A → B              : 0.991
+                B → C              : 0.965
+                C → F              : 0.982
+                B → D              : 0.954
+                D → G              : 0.923
+                E → H              : 0.989
+==================================================
+==================================================
+VelOT Velocity Metrics
+==================================================
+
+Inner-Cluster Coherence (mean: 0.697):
+                          A: 0.829
+                          B: 0.780
+                          C: 0.663
+                          D: 0.702
+                          E: 0.680
+                          F: 0.619
+                          G: 0.646
+                          H: 0.654
+
+Inner-Cluster Coherence (median: 0.683):
+                          A: 0.831
+                          B: 0.785
+                          C: 0.677
+                          D: 0.705
+                          E: 0.688
+                          F: 0.623
+                          G: 0.644
+                          H: 0.659
+
+Cross-Boundary Correctness (mean: 0.986):
+                A → B              : 0.984
+                B → C              : 0.969
+                C → F              : 0.995
+                B → D              : 0.987
+                D → G              : 0.982
+                E → H              : 0.997
+==================================================
+BenchmarkTimer(
+  load: 0.15s
+  velocity: 3.63s
+  evaluate: 5.44s
+  total: 9.22s
+)
+  Saved: ../article_figures/figure5/results_synthetic/velot_gradient_seed0_raw_trifurcation.json
+  Saved: ../article_figures/figure5/results_synthetic/velot_gradient_seed0_smooth_trifurcation.json
+
+### all runs completed
+
+### all expected result files present and readable
+
+12 rows -> runs.csv (6 runs -> runs_wide.csv), summary.csv
+
+Smoothed field, mean +- sd across seeds
+                                  mean                    sd           
+metric                      cbdir_mean iccoh_mean cbdir_mean iccoh_mean
+dataset      method                                                    
+bifurcation  velot            0.937285    0.94917        0.0        0.0
+             velot_gradient   0.992571   0.707549        0.0        0.0
+linear       velot            0.958793   0.869017        0.0        0.0
+             velot_gradient   0.993296   0.676196        0.0        0.0
+trifurcation velot            0.802577   0.942825        0.0        0.0
+             velot_gradient   0.985575   0.696745        0.0        0.0
+
+12 groups have fewer than 5 seeds (sweeps are single-seed by design).
+
+log: ../article_figures/figure5/results_synthetic/run_all_20261005_140501.log
